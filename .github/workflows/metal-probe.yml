@@ -1,0 +1,59 @@
+name: Metal runner probe
+
+# One-shot probe for issue #9: on a free GitHub-hosted macos-15 runner, check
+# Metal device visibility, compile+execute a custom MSL compute kernel via both
+# the runtime path (metal crate) and the offline toolchain (xcrun metal/metallib).
+# Trigger: push to this probe branch only (one run), plus workflow_dispatch for
+# any explicit re-run. Kept scoped so nothing on main can trigger this.
+on:
+  push:
+    branches: [probe/metal-runner]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Record runner environment
+        run: |
+          echo "== runner metadata =="
+          sw_vers
+          uname -a
+          echo "ImageOS=$ImageOS"
+          echo "RUNNER_IMAGE_VERSION=$RUNNER_IMAGE_VERSION"
+          echo "== Xcode / Metal toolchain =="
+          xcodebuild -version
+          xcrun --find metal || echo "xcrun --find metal: NOT FOUND"
+          xcrun metal --version || echo "xcrun metal --version: FAILED"
+          echo "== GPU / displays (system_profiler) =="
+          system_profiler SPDisplaysDataType | sed -n '1,40p'
+
+      - name: Runtime path - metal crate source compile, execute, readback
+        run: |
+          cd probe/metal-runtime
+          cargo run --release --verbose
+
+      # The offline path runs even if the runtime path failed: one path failing
+      # does not imply the other is unavailable (ticket #9 requirement).
+      - name: Offline path - xcrun metal + metallib compile
+        if: ${{ always() }}
+        run: |
+          mkdir -p probe/artifacts
+          xcrun metal -c probe/metal-runtime/src/vec_add.metal -o probe/artifacts/vec_add.air
+          xcrun metallib probe/artifacts/vec_add.air -o probe/artifacts/vec_add.metallib
+          ls -la probe/artifacts
+          file probe/artifacts/vec_add.air probe/artifacts/vec_add.metallib
+
+      - name: Upload offline artifacts
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: metal-offline-artifacts
+          path: probe/artifacts/
+          if-no-files-found: ignore
