@@ -28,7 +28,7 @@ fn main() {
     println!("device_count={}", devices.len());
     for d in &devices {
         println!(
-            "device name={:?} registry_id={} low_power={} headless={} max_threads_per_threadgroup={}",
+            "device name={:?} registry_id={} low_power={} headless={} max_threads_per_threadgroup={:?}",
             d.name(),
             d.registry_id(),
             d.is_low_power(),
@@ -58,7 +58,7 @@ fn main() {
             std::process::exit(4);
         }
     };
-    let pipeline = match device.new_compute_pipeline_state(&kernel) {
+    let pipeline = match device.new_compute_pipeline_state_with_function(&kernel) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("PROBE_RESULT=pipeline_failed: {e:?}");
