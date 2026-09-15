@@ -27,7 +27,7 @@
 
 ## 1. 前置调查钉住的问题
 
-#14 已确认的现状（决议：[issuecomment-5676642389](https://github.com/Jopqior/tile-rs/issues/14#issuecomment-5676642389)）：
+[核实多后端 emitter 的重复、职责与硬件差异](https://github.com/Jopqior/tile-rs/issues/14) 已确认的现状：
 
 - 已有共享：`mlir_parse` 文本解析与助手；MUSA 对 CUDA 的整生成器委托；`CodegenTarget::emit` 调用与输出包装。这些共享的是解析结果和调用缝，不是各目标内部的操作分析。
 - 跨目标维护联动来自独立的操作识别、参数读取和组合分析。SiLU→Mul 检测规则已经分叉，不能把差异全部归因于硬件或实现缺陷。
@@ -35,7 +35,7 @@
 - 值得研究的共性：共同输入语义及数据依赖分析，能否与目标实现选择分别变化。
 - 不能被简单抹平的差异：目标原语、存储与同步、入口和工作分配契约、由哪个阶段展开算法。现存算法选择不全是硬件必需。
 
-领域地图对输入与 Metal 终点的约束（#13）：
+[建立 tile-rs 领域模型、全仓 crate 地图与 Metal 完整转换链路](https://github.com/Jopqior/tile-rs/issues/13) 对输入与 Metal 终点的约束：
 
 - 公开生成器消费的是 LLVM 方言写法的 MLIR 文本，函数体主要是文本行，不是完整 MLIR API 对象，也不是独立的 Tile IR。
 - `llvm.*` 不等于 LLVM IR 文本；`__tile_*` 是调用符号，不足以证明存在 `tile.*` 方言。
@@ -54,7 +54,7 @@
 
 **机制（一手事实）**
 
-LLVM 把 GPU 相关代码生成放进独立 Target，与 CPU Target 并列。2026-09-15 的 `llvm/lib/Target` 目录含 `NVPTX`、`AMDGPU`、`SPIRV`、`DirectX`，没有 `Metal` 或 `AIR`。文档对应：
+LLVM 把 GPU 相关代码生成放进独立 Target，与 CPU Target 并列。[llvm/lib/Target @ f0907c3](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/lib/Target) 含 `NVPTX`、`AMDGPU`、`SPIRV`、`DirectX`，目录名中没有 `Metal` 或 `AIR`。这记录的是缺少现成后端，不是 Apple GPU 不能共享线程/工作组这类执行概念。文档对应：
 
 - NVPTX：消费 LLVM IR 子集，用 `ptx_kernel` 等约定表示 kernel，产出 PTX。[NVPTXUsage.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/docs/NVPTXUsage.md)
 - SPIR-V Target：`llc -mtriple=spirv32/spirv64/...` 或 `clang --target=spirv64`，面向 OpenCL / Vulkan 运行时，不是 Metal。[SPIRVUsage.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/docs/SPIRVUsage.md)
@@ -62,19 +62,19 @@ LLVM 把 GPU 相关代码生成放进独立 Target，与 CPU Target 并列。202
 
 MLIR `gpu` 方言自称「类似 CUDA 或 OpenCL 的编程模型」，提供 `gpu.module` / `gpu.func` / `gpu.launch` 以及 thread/block/subgroup 原语。官方编译示例是 `nvvm-attach-target` → `convert-gpu-to-nvvm` → `gpu-to-llvm` → `gpu-module-to-binary`。文档写明该默认 NVVM 流水线「要求已经显式并行的 IR，自己不做 GPU 并行化」。[GPU.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/GPU.md)
 
-`mlir/lib/Conversion` 在同一 SHA 下有 `GPUToNVVM`、`GPUToROCDL`、`GPUToSPIRV`、`GPUToLLVMSPV`，没有 `GPUToMetal`。
+[mlir/lib/Conversion @ f0907c3](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/lib/Conversion) 有 `GPUToNVVM`、`GPUToROCDL`、`GPUToSPIRV`、`GPUToLLVMSPV`，没有 `GPUToMetal`。
 
 IREE 把 CUDA、ROCM、VulkanSPIRV、MetalSPIRV、WebGPUSPIRV 做成并列的 HAL target 插件。[compiler/plugins/target](https://github.com/iree-org/iree/tree/5bd1d9629ee60284fdc56ae61b0c5bc712c78ccf/compiler/plugins/target) 目录列出这些名字。Metal 插件复用 SPIR-V codegen 流水线，再交叉编译，见第 3 节。Apple 目标细节里 `mmaCount = 0`，feature 字符串是 `spirv:v1.3,cap:Shader`。[KnownTargets.cpp](https://github.com/iree-org/iree/blob/5bd1d9629ee60284fdc56ae61b0c5bc712c78ccf/compiler/src/iree/compiler/Codegen/Dialect/GPU/TargetUtils/KnownTargets.cpp)（约 901–915、1430–1433 行）
 
 **适用性推断**
 
-「GPU 家族」能解释：NVPTX / AMDGPU / SPIR-V 为何共享一份 LLVM IR 或一份 `gpu` 方言，再分叉到不同序列化。它解释不了 Metal 作为 LLVM/MLIR 一等目标，因为公开树里没有这条分叉。
+「GPU 家族」能解释：NVPTX / AMDGPU / SPIR-V 为何共享一份 LLVM IR 或一份 `gpu` 方言，再分叉到不同序列化。`gpu` 方言的 thread/block/subgroup/barrier 模型也可以用来描述 Apple GPU 上的线程与工作组；缺的是 LLVM/MLIR 树里现成的 Metal/AIR 后端与序列化，不是执行概念本身不能共享。IREE 把 Metal 插件放在与 CUDA、ROCM、VulkanSPIRV 并列的 GPU HAL 目标下，走的是共享 SPIR-V 再交叉编译，见第 3 节。
 
-对照 tile-rs：公开生成器覆盖 CUDA、MUSA、GLSL、MSL，也覆盖 NKI、TPU/Pallas、PTO、AIE、BANG、Gaudi 等非 GPU 目标。按 GPU 家族切一层，最多覆盖其中一部分；NKI/TPU/PTO 的目标原语与工作分配不在 CUDA/OpenCL 模型里。MUSA 已经用整生成器委托贴在 CUDA 上，这是家族内局部共享，不是新的 GPU IR。
+对照 tile-rs：公开生成器覆盖 CUDA、MUSA、GLSL、MSL，也覆盖 NKI、TPU/Pallas、PTO、AIE、BANG、Gaudi 等目标。本次核实的 CUDA/OpenCL 风格通路（LLVM GPU Target、MLIR `gpu` 方言的 NVVM/ROCDL/SPIR-V 转换）只覆盖其中一部分。其余目标各自产出 NKI Python、Pallas、PTO-MLIR、IRON、BANG-C、TPC-C 等文本，本次不按硬件家族归类。MUSA 已经用整生成器委托贴在 CUDA 上，这是该对目标上的局部共享，不是新的 GPU IR。
 
 **不能复用的职责**
 
-即便只讨论 GPU 子集，Metal 的入口属性、threadgroup 内存、barrier、simdgroup matrix、以及 host 侧 `dispatch_thread_groups` 契约仍要单独表达。IREE 自己把 Apple WGP 的 MMA 计数写成 0，并注明这些数值未经核对。tile-rs 的 MSL 生成器里存在 simdgroup 矩阵乘与 partition-cell 路径（#14），不能假定「GPU 家族 lowering」会自动发出这些原语。
+即便讨论可共享的 GPU 执行概念，Metal 的入口属性、threadgroup 内存、barrier、simdgroup matrix、以及 host 侧 `dispatch_thread_groups` 契约仍要单独表达。IREE 自己把 Apple WGP 的 MMA 计数写成 0，并注明这些数值未经核对。[核实多后端 emitter 的重复、职责与硬件差异](https://github.com/Jopqior/tile-rs/issues/14) 记录 MSL 生成器里存在 simdgroup 矩阵乘与 partition-cell 路径，不能假定现成的 NVVM/ROCDL/SPIR-V lowering 会自动发出这些原语。
 
 ### 2.2 按编译职责或能力组织
 
@@ -94,7 +94,7 @@ Apple 把 MSL 编译分成在线（API 编译源字符串）和离线（先得�
 
 **适用性推断**
 
-这一维直接对应 #14 里「由哪个阶段展开算法」以及「入口和工作分配契约」。SPIR-V `target_env` 和 Metal GPU family 是「这个目标允许哪些 op」的合法性表，和 tile-rs 各文件里的 `KernelType` / `classify_body` 不是同一件事：前者是目标能力，后者是对输入文本的模式识别。
+这一维直接对应前置调查里「由哪个阶段展开算法」以及「入口和工作分配契约」。SPIR-V `target_env` 和 Metal GPU family 是「这个目标允许哪些 op」的合法性表，和 tile-rs 各文件里的 `KernelType` / `classify_body` 不是同一件事：前者是目标能力，后者是对输入文本的模式识别。
 
 tile-rs 已经把 emit 与工具链调用分开。再按职责分层，增量主要在 emit 内部：识别输入、选择实现、写出目标语言。外部机制能证明这种切开是常见做法，不能证明必须再引入 MLIR pass manager。
 
@@ -112,23 +112,25 @@ MLIR 的渐进 lowering：Arith / GPU 等方言 → SPIR-V 方言 → 序列化�
 
 LLVM 方言把 LLVM IR 映射进 MLIR，`llvm.func` 是一等操作，指针语法为 `!llvm.ptr` 及可选地址空间 `!llvm.ptr<N>`。[LLVM.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/LLVM.md)。这与 tile-rs 测试里的 `!llvm.ptr<1>` 写法一致，只说明类型记号同类，不说明整模块可被 `mlir-opt` 验证。
 
-tile-rs 已有一条 **egress** 式 linalg 文本生成：把 `__tile_*` 写成 `linalg.softmax` / `linalg.matmul` 等 named operation，生成器自己不展开线程与同步（#14 Softmax / matmul 对照）。文件头称其面向「linalg-on-tensors」。[mlir_to_linalg.rs](https://github.com/Jopqior/tile-rs/blob/45a3cd148bba0c953a8b03071038ea46a9d08b93/crates/rustc_codegen_tile/src/mlir_to_linalg.rs)。PTO 是另一条可输出的 MLIR 方言文本，领域地图写明它不是各目标必经阶段。
+tile-rs 已有一条 **egress** 式 linalg 文本生成：把 `__tile_*` 写成 `linalg.softmax` / `linalg.matmul` 等 named operation，生成器自己不展开线程与同步。对照见前置调查的 Softmax / matmul 表。文件头称其面向「linalg-on-tensors」。[mlir_to_linalg.rs](https://github.com/Jopqior/tile-rs/blob/45a3cd148bba0c953a8b03071038ea46a9d08b93/crates/rustc_codegen_tile/src/mlir_to_linalg.rs)。PTO 是另一条可输出的 MLIR 方言文本，领域地图写明它不是各目标必经阶段。
+
+上游把 linalg 放在高层分层优化（HHO），关键变换包括映射到并行/归约循环与硬件、降到循环或库调用。[Linalg dialect](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/Linalg/_index.md)。`linalg.softmax` 的 ODS 写明它是 aggregate，会再分解成一小段 structured op DAG。[LinalgOps.td](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/include/mlir/Dialect/Linalg/IR/LinalgOps.td)（`Linalg_SoftmaxOp`）。GPU 方言文档的操作表是 launch、barrier、thread/subgroup 等，没有 named softmax。[GPU.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/GPU.md)。SPIR-V 文档列出的当前转换来自 Arith 与 GPU，`gpu.func` 降为入口函数，不是保留 `linalg.softmax`。[SPIR-V.md Current conversions](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/SPIR-V.md)。
 
 Khronos 对 SPIR-V 的定位：供 Vulkan、OpenGL、OpenCL 驱动消费的中间形式。[Khronos SPIR](https://www.khronos.org/spir/)（2026-09-15 抓取）。Metal 不在该客户 API 列表里。
 
 **适用性推断**
 
-共享 IR 能解释「识别与数据依赖」和「目标实现」如何分开：在 GPU/SPIR-V 方言里，softmax 可以仍是 `gpu`/`linalg` 操作，由后续 pass 决定展开成 warp 归约还是 subgroup op。这正是 #14 对 linalg 生成器的观察。
+共享 IR 能解释「识别与数据依赖」和「目标实现」如何分开：softmax 可以停在高层 `linalg.softmax`，由后续变换分解并映射到硬件；一旦降进 GPU 或 SPIR-V 方言，保留的是线程/工作组与 SPIR-V 指令，不是 named softmax。前置调查里 linalg 生成器停在 named op，Metal/CUDA 生成器则自行展开，对应的是这条分层上的不同停留点，不是 GPU/SPIR-V 方言原生保留 softmax。
 
 对当前 tile-rs 输入，这一步的前置成本是 **raising**：公开生成器看到的是 `llvm.call @__tile_add_f32` 这类符号，不是 `gpu.func` 或 `linalg.add`。`parse_module` 明确是 std-only 文本扫描，禁止 MLIR/LLVM 依赖。[mlir_parse.rs](https://github.com/Jopqior/tile-rs/blob/45a3cd148bba0c953a8b03071038ea46a9d08b93/crates/rustc_codegen_tile/src/mlir_parse.rs)。接入 `convert-gpu-to-spirv` 之前，至少要先得到带 `spirv.entry_point_abi` 的 `gpu.func`，并处理 `__tile_*` 的语义。本次未尝试用 `mlir-opt` 解析测试片段。
 
-linalg 生成器已经演示「保留 named operation、把展开留给后续工具」。它是单独目标，不是 CUDA/MSL/NKI 的公共前置。把它改成公共层，等于改变所有目标的输入契约，也把线程/同步职责从各 emitter 挪走；对 Metal 仍要有人写出 threadgroup 归约或调用后续 GPU 流水线。
+linalg 生成器已经演示「保留 named operation、把展开留给后续工具」。它是单独目标，不是 CUDA/MSL/NKI 的公共前置。把它改成公共层会改变各目标的输入契约。线程与同步是否离开 emit，取决于停留点：继续停在 named op、降到 `gpu` 方言再按目标 lowering，或仍在 emit 里展开。共享 IR 本身不会自动把这些职责移出 emit。对 Metal，停留点之后仍要有人写出 threadgroup 归约，或再接第 3 节的交叉编译。
 
 **不能复用的职责**
 
 - 从 `__tile_*` 文本到可验证 MLIR 的 raising、合法性和地址空间模型。
-- 非 GPU 目标（PTO/NKI/TPU）并不消费 `gpu` 或 SPIR-V 方言。
-- Metal 若停在 SPIR-V 方言，仍然没有官方序列化到 MSL；必须再接第 3 节的交叉编译。
+- 公开的 PTO、NKI、TPU 生成器产出各自的目标文本；本次未核实它们走 `gpu` 或 SPIR-V 方言通路。
+- Metal 若停在 SPIR-V 方言，上游 Conversion 目录里没有到 MSL 的序列化；必须再接第 3 节的交叉编译。
 - 发布 rustc 编译器后端内部的 MIR→MLIR 不可见。若上游开始产出真正的 `gpu`/`linalg` 模块，公开生成器的输入假设会变；本票不能把那种未来输入当成现状。
 
 ### 2.4 直接 emit 与局部共享
@@ -145,9 +147,9 @@ tile-rs 现状就是这一类：每个目标一个 `convert_mlir_to_*`，共享�
 
 **适用性推断**
 
-局部共享能解释 MUSA，也能解释「先有一份 SPIR-V，再分叉出 MSL/HLSL/GLSL」。它不自动共享 #14 里的 SiLU 识别或 matvec 链分析：那些发生在生成目标文本之前。SPIRV-Cross/naga 接的是已经合法的着色器 IR，不是 `__tile_*` 文本。
+局部共享能解释 MUSA，也能解释「先有一份 SPIR-V，再分叉出 MSL/HLSL/GLSL」。它不自动共享前置调查里的 SiLU 识别或 matvec 链分析：那些发生在生成目标文本之前。SPIRV-Cross/naga 接的是已经合法的着色器 IR，不是 `__tile_*` 文本。
 
-MSL 头注释声称复用 SPIR-V 分类，#14 已核对两份 `KernelType` 与 `classify_body` 各自定义。这是「注释当共享」失败的实例，属于直接 emit 下局部复制的维护成本。
+MSL 头注释声称复用 SPIR-V 分类，前置调查已核对两份 `KernelType` 与 `classify_body` 各自定义。这否定的是「注释当共享」，不是拆文件实验失败。
 
 **不能复用的职责**
 
@@ -169,10 +171,10 @@ naga 要求调用方提供 binding map；MSL 入口参数与 IR 侧不同，它�
 | B. SPIR-V 二进制 → SPIRV-Cross → MSL → A | SPIR-V 模块，compute 入口，descriptor set/binding | `CompilerMSL::compile()` 得 MSL，再走 A | 要 SPIR-V 二进制而非 GLSL；binding/workgroup/entry 名需调用方配置；subgroup 在部分设备上要模拟 | **真实**。IREE `metal-spirv` 与 MoltenVK 走这条 |
 | C. MLIR GPU → SPIR-V 方言 → 序列化 → B | `gpu.module`/`gpu.func` + `spirv.entry_point_abi` | `convert-gpu-to-spirv` + `spirv::serialize` | 当前公开输入不是这种形态 | **到 SPIR-V 为真实**；接 Metal 必须再经 B。不能停在 GPU 方言 |
 | D. MLIR GPU → NVVM / ROCDL | 同 C 的 GPU 方言 | `convert-gpu-to-nvvm` / `GPUToROCDL`，序列化为 cubin/AMDGPU | 官方流水线示例即此 | **不是 Metal** |
-| E. LLVM IR → NVPTX / AMDGPU / SPIR-V / DXIL | LLVM IR + 对应 triple | `llc` | `llvm/lib/Target` 无 Metal | **不是 Metal** |
+| E. LLVM IR → NVPTX / AMDGPU / SPIR-V / DXIL | LLVM IR + 对应 triple | `llc` | [llvm/lib/Target](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/lib/Target) 无 Metal 目录 | **没有现成 Metal 后端** |
 | F. SPIR-V 或 WGSL → naga → MSL → A | naga IR（由 SPIR-V/WGSL 前端来） | `msl-out` | 自备 binding map；部分原子能力缺失；AIR 后端栏为空 | **真实转换器**，IR 与 SPIRV-Cross 不同 |
 | G. Vulkan + SPIR-V → MoltenVK | Vulkan API 与 SPIR-V 着色器 | 运行时转 MSL 并调 Metal | 应用改走 Vulkan，不产出给 tile-rs host 用的 `.metal` | **真实运行时**，不是 emitter 分层候选 |
-| H. 上游 MLIR Metal 方言 | — | — | Dialects 目录无 Metal.md | **未找到**。不能从 GPU 方言存在推出 |
+| H. 上游 MLIR Metal 方言 | — | — | [mlir/docs/Dialects](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects) 有 GPU.md、SPIR-V.md、NVVMDialect.md、Linalg/，无 Metal.md | **未找到现成方言文档**。不能从 GPU 方言存在推出 |
 
 ### 3.1 路径 A：MSL 是 Metal 的公共编译输入
 
@@ -205,11 +207,11 @@ SPIRV-Cross 源码会 `#include <metal_simdgroup_matrix>`（`spirv_msl.cpp` 约 
 
 对 tile-rs 的关键错位：名为 `spirv` 的生成器产出 GLSL `.comp` 文本，声明再经 `glslangValidator`/`glslc` 得 SPIR-V。SPIRV-Cross 的输入是 SPIR-V 二进制。中间还缺一次 glslang，且生成的 GLSL 是否满足 Vulkan 语义、能否通过 SPIRV-Cross 的 compute 路径，**未核实**。不能把「已有 spirv 生成器」读成「已有 Metal 间接通路」。
 
-### 3.3 路径 C–E：GPU/LLVM 家族 lowering 到不了 Metal
+### 3.3 路径 C–E：有 GPU 家族 lowering，没有现成 Metal 后端
 
-`convert-gpu-to-spirv` 是真实的 GPU→SPIR-V。之后只有再接 B 才到 Metal。`convert-gpu-to-nvvm` 与 `GPUToROCDL` 的官方用途是 NVIDIA/AMD。LLVM Target 列表在 2026-09-15 没有 Metal。naga 的 AIR 后端在支持表里为空。
+`convert-gpu-to-spirv` 是真实的 GPU→SPIR-V。之后只有再接 B 才到 MSL 工具链。`convert-gpu-to-nvvm` 与 `GPUToROCDL` 的官方用途是 NVIDIA/AMD。[mlir/lib/Conversion](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/lib/Conversion) 无 `GPUToMetal`。[llvm/lib/Target](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/lib/Target) 无 Metal 目录。naga 的 AIR 后端在支持表里为空。GPU.md 还写明部分 op（如 `subgroup_mma_*`）「在某些 lowering（例如到 SPIR-V）中可以没有定义」。
 
-**适用性推断**：把 tile-rs 输入升到 `gpu` 方言，可以得到 CUDA/ROCm/Vulkan 共享层，仍然要为 Metal 外挂 B 或继续手写 MSL。
+**适用性推断**：把 tile-rs 输入升到 `gpu` 方言，可以与 NVVM/ROCDL/SPIR-V 转换共享执行概念；接到 Metal 仍要外挂 B 或继续手写 MSL。这不是说 Apple GPU 被排除在家族共享之外，而是公开树里没有现成的 Metal 序列化。任意 `gpu` op 也不因此对每个后端都合法。
 
 ### 3.4 路径 F–G：库与运行时替代
 
@@ -223,17 +225,17 @@ IREE 网站的 GPU-Metal 部署指南正文是 “Documentation coming soon!”�
 
 ## 4. 对照前置职责：机制能接住什么
 
-| #14 里的问题 | 硬件家族 | 编译职责/能力 | 共享 IR / MLIR lowering | 直接 emit + 局部共享 |
+| 前置调查里的问题 | 硬件家族 | 编译职责/能力 | 共享 IR / MLIR lowering | 直接 emit + 局部共享 |
 |---|---|---|---|---|
 | 文本解析已共享 | 不涉及 | 已有 `emit` 缝 | 若改用 MLIR API，parser 会被替换而非扩展 | 现状 |
 | SiLU/链分析各自一份 | 家族层不管输入识别 | 可把「识别」标成独立职责，仍要写实现 | 升到 SSA/方言后，use-def 由 IR 提供，融合策略仍可按目标分叉 | 抽公共助手可减复制，不强迫相同融合 |
-| Metal 分类与输出联动 | 无 Metal 分叉可卸这层联动 | 可把分类从 emit 正文拆出；调度顺序仍是 Metal 实现细节 | 用 conversion legality 代替 `KernelType` 后，专用正文要么变成 pattern，要么仍留在 target | 拆文件或共享分类注释已经失败过一次 |
-| softmax 数学同、实现不同 | GPU 家族可共享「未展开的 reduce」；NKI/TPU/linalg 不在该家族 | 「谁展开」正是职责切分 | linalg.softmax 已演示不展开；Metal 展开仍要写 threadgroup | 各写各的，现状 |
+| Metal 分类与输出联动 | 现成 NVVM/ROCDL/SPIR-V 后端卸不掉这层联动；执行概念仍可共享 | 可把分类从 emit 正文拆出；调度顺序仍是 Metal 实现细节 | 用 conversion legality 代替 `KernelType` 后，专用正文可以变成 pattern，也可以仍留在 target | 前置调查只否定了注释声称的共享，没有拆文件实验失败的证据 |
+| softmax 数学同、实现不同 | 可共享未展开的高层计算；展开后的线程归约按目标走 | 「谁展开」正是职责切分 | `linalg.softmax` 停在 named op；降进 GPU/SPIR-V 后不再是该 named op。Metal 若在 emit 展开，仍要写 threadgroup | 各写各的，现状 |
 | CUDA matmul 仍是 TODO 注释 | 共享 GPU IR 不会自动补实现 | 能力表能记录缺口，不能生成 cublas 调用 | 降到 `linalg.matmul` 把实现推给后续工具 | 局部共享会连缺口一起复制（MUSA 已继承 CUDA） |
-| 入口/buffer/dispatch 契约 | 各家族 ABI 不同 | SPIR-V ABI 属性、Metal buffer index 都是这一层 | 共享 IR 通常停在 device 计算，host 绑定另做 | 直接写在生成文本与 host 里 |
-| 非 GPU 目标 | 解释不了 | 可按目标各做 legality | `gpu`/SPIR-V 复用不上 | 现状：各文件一份 |
+| 入口/buffer/dispatch 契约 | 各后端 ABI 不同 | SPIR-V ABI 属性、Metal buffer index 都是这一层 | 共享 IR 可以停在 device 计算，host 绑定另做；不是自动结果 | 直接写在生成文本与 host 里 |
+| CUDA/OpenCL 风格通路以外的目标 | 本次核实的 NVVM/ROCDL/SPIR-V 转换覆盖不到它们 | 可按目标各做 legality | 公开的 PTO/NKI/TPU 生成器未走这些方言 | 现状：各文件一份 |
 
-**适用性推断**：若目标是减少「识别输入约定」的同步修改，共享 IR 或共享分析助手都可能碰到这个问题；前者换来可验证的 use-def，代价是 raising 与新依赖。若目标是减少 Metal 专用正文，SPIR-V 交叉编译能生成一份可编译 MSL，但 IREE/SPIRV-Cross 不会自动复现 tile-rs 当前的单 workgroup 融合循环、partition-cell 或 simdgroup gemm 选择。那些属于实现选择，#14 已说明不全是硬件必需，也没有被外部通路验证为可替换。
+**适用性推断**：若目标是减少「识别输入约定」的同步修改，共享 IR 或共享分析助手都可能碰到这个问题；前者换来可验证的 use-def，代价是 raising 与新依赖。若目标是减少 Metal 专用正文，SPIR-V 交叉编译能生成一份可编译 MSL，但 IREE/SPIRV-Cross 不会自动复现 tile-rs 当前的单 workgroup 融合循环、partition-cell 或 simdgroup gemm 选择。那些属于实现选择，前置调查已说明不全是硬件必需，本次也未核实交叉编译能保留它们。
 
 ---
 
@@ -241,13 +243,13 @@ IREE 网站的 GPU-Metal 部署指南正文是 “Documentation coming soon!”�
 
 来自 IREE / SPIRV-Cross / naga / Apple 文档的成本，不是工时估计。
 
-- **依赖**：SPIRV-Cross（C++，IREE 用 `third_party/spirv_cross`，异常改断言）；或 naga（Rust）。MLIR GPU/SPIR-V 还要完整 MLIR 库、pass 与序列化。与当前 std-only 的 `mlir_parse` / `CodegenTarget` 测试模型冲突。
-- **主机限制**：IREE 离线 metallib 需要 macOS 上的 `xcrun`。Linux CI 只能停在 MSL 源。Apple 在线 API 同样要在有 Metal 框架的机器上。
+- **依赖**：SPIRV-Cross（C++，IREE 用 `third_party/spirv_cross`，异常改断言）；或 naga（Rust）。若进程内调用 `convert-gpu-to-spirv` / `spirv::serialize`，需要对应的 Conversion 与 SPIR-V 库（目录中的 `GPUToSPIRV`、`ArithToSPIRV`、`MLIRSPIRVSerialization` 等），不是整棵 MLIR 源码树。也可以进程外调 `mlir-opt`。与当前 std-only 的 `mlir_parse` / `CodegenTarget` 测试模型的差异，是引入这些库或外部进程。
+- **主机限制**：IREE 的 `compileMSLToMetalLib` 只在 `hostTriple.isMacOSX()` 时调用 `xcrun metal | metallib`，否则嵌入 MSL 源。同文件 TODO 写明工具链也可能在其它平台，应探测 PATH，本次未核实。不能把「Linux CI 只能停在 MSL 源」推广为 Apple 工具链的普遍不可用。Apple 在线 `makeLibrary(source:)` 要在有 Metal 框架的机器上运行。
 - **ABI 胶水**：descriptor set → `[[buffer]]` / argument buffer；push constant 槽位；entry 重命名；threadgroup size 从着色器抽到 host。IREE 为这些写了专门代码，并与 HAL 常量互锁。
 - **能力子集**：IREE Apple 目标按 SPIR-V 1.3 Shader capability 配置，MMA 计数为 0。SPIRV-Cross 在 iOS 上可改用 quadgroup 或 `emulate_subgroups`。naga 缺 64 位原子全集。交叉编译结果是「Vulkan 计算模型能表达、且转换器认识」的子集，不是 MSL 语言全集。
 - **链接粒度**：IREE 记录 spirv-cross 导致一函数一 metallib，弱于其 Vulkan 目标。
 - **数值与数学模式**：MSL 默认 fast math 允许无 NaN/Inf、重关联、收缩。Spec §1.6.3。交叉编译或手写 MSL 若未设 `-fmetal-math-mode`，与 CUDA/CPU 参考的误差模型不必相同。本次未测。
-- **非复用**：NKI/TPU/PTO/AIE 的原语、tile-rs 量化/GGUF 专用生成函数、以及发布后端内部 MIR→MLIR，都不在上述 Metal 通路里。
+- **非复用**：PTO、NKI、TPU 等生成器的目标原语、tile-rs 量化/GGUF 专用生成函数、以及发布后端内部 MIR→MLIR，都不在上述已核实的 Metal 通路里。
 
 ---
 
@@ -262,27 +264,27 @@ IREE 网站的 GPU-Metal 部署指南正文是 “Documentation coming soon!”�
 7. SPIRV-Cross GitHub「最新 release」标签仍是 `MoltenVK-1.1.5`（2021-08-30）；开发在 `main`。引用以 `main` SHA 为准，不要用那个 release 当当前功能集。
 8. IREE 部署指南 GPU-Metal 页尚未成文。Metal 3 期望（macOS Ventura / iOS 16）来自 2023 年左右的 design doc，是否仍是运行时下限，未对照当前 IREE HAL 源码逐项复核。
 
-这些缺口若要影响 #16 的架构判断，需要专项补查或原型；本票不把它们补成肯定句。
+这些缺口若要影响 [决定多后端 emit 的整体分层方向与待实践假设](https://github.com/Jopqior/tile-rs/issues/16) 的架构判断，需要专项补查或原型；本票不把它们补成肯定句。
 
 ---
 
 ## 7. 对后续决策的事实输入
 
-本票不选择是否分层。下面是机制研究能稳定提供给 #16 的句子。
+本票不选择是否分层。下面是机制研究能稳定提供给 [决定多后端 emit 的整体分层方向与待实践假设](https://github.com/Jopqior/tile-rs/issues/16) 的句子。
 
-1. Metal 的公共编译入口是 MSL 源码（在线 API 或 `metal`/`metallib`）。LLVM 与上游 MLIR 在 2026-09-15 没有 Metal Target 或 Metal 方言。
-2. 已核实的间接 Metal 通路是：合法 SPIR-V 二进制 → SPIRV-Cross 或 naga → MSL → 路径 A。IREE 的 `metal-spirv` 是这条路的完整编译器实例。MLIR `gpu` 方言只保证能降到 NVVM/ROCDL/SPIR-V。
-3. 按硬件家族组织能说明 CUDA/ROCm/Vulkan 为何共享 GPU 编程模型，说明不了 Metal ISA，也覆盖不了 NKI/TPU/PTO。tile-rs 的 MUSA 已经是家族内局部共享。
+1. Metal 的公共编译入口是 MSL 源码（在线 API 或 `metal`/`metallib`）。LLVM 与上游 MLIR 在 2026-09-15 的 Target / Conversion / Dialects 目录里没有 Metal 后端或 Metal 方言文档。
+2. 已核实的间接 Metal 通路是：合法 SPIR-V 二进制 → SPIRV-Cross 或 naga → MSL → 路径 A。IREE 的 `metal-spirv` 是这条路的完整编译器实例。MLIR 提供的是到 NVVM、ROCDL、SPIR-V 的转换；这不表示任意 `gpu` op 对每个后端都合法。
+3. 按硬件家族组织能说明 CUDA/ROCm/Vulkan 为何共享 GPU 执行概念；Apple GPU 也可以落在该概念里（IREE 即如此）。公开树缺少的是现成 Metal/AIR 后端，不是 Metal 被排除在共享之外。该通路也覆盖不到本次未核实走 CUDA/OpenCL 风格 lowering 的那些目标。tile-rs 的 MUSA 已经是 CUDA 上的局部共享。
 4. 按编译职责组织与现状的 `CodegenTarget::emit` 一致。SPIR-V `target_env` 和 Metal 的 buffer/threadgroup 契约属于「能力与 ABI」，和各文件里的 `KernelType` 模式识别不是同一层。
-5. 共享 IR 要先改变或 raising 当前 `__tile_*` 文本输入。linalg 生成器已是「不展开算法」的 egress 样本，不是其它目标的前置阶段。
-6. 直接 emit 加局部共享是现状；SPIRV-Cross/naga 是「已有着色器 IR 之后」的局部转换，接不上现在的文本识别职责。
-7. 交叉编译接上 Metal 之后，仍要单独维护 binding、workgroup size、entry 名，以及手写 MSL 里那些未被 SPIR-V 模型表达的实现选择。
+5. 共享 IR 要先改变或 raising 当前 `__tile_*` 文本输入。linalg 生成器已是「停在 named op」的 egress 样本，不是其它目标的前置阶段。线程与同步是否离开 emit，取决于停留点，不是共享 IR 的自动结果。
+6. 直接 emit 加局部共享是现状；SPIRV-Cross/naga 是「已有着色器 IR 之后」的局部转换，接不上现在的文本识别职责。前置调查否定的是注释声称的分类共享。
+7. 交叉编译接上 Metal 之后，仍要单独维护 binding、workgroup size、entry 名。手写 MSL 里的单 workgroup 融合循环、partition-cell、simdgroup gemm 等实现选择，本次未核实能由 SPIR-V 交叉编译保留。
 
-地图「尚未指定」里关于有区分度的 kernel/对照/原型，仍取决于 #16 是否把某一条路径当成假设。本报告能提供的区分线索（尚未做成原型票）：
+地图「尚未指定」里关于有区分度的 kernel/对照/原型，仍取决于整体判断票是否把某一条路径当成假设。本报告能提供的区分线索（尚未做成原型票）：
 
 - 同一份 `__tile_softmax` 输入：手写 MSL 归约 vs SPIRV-Cross 从 GLSL/SPIR-V 来的 MSL，能否通过 `xcrun metal`，host 绑定是否还成立。
 - 同一份 matvec/gemm 链：`simdgroup_matrix` 是否能从 SPIR-V 交叉编译出现，还是只能留在直接 emit。
-- 不经 GPU 方言、只把 SiLU 识别抽成助手，能否在不引入 MLIR 的情况下打断 #14 的同步修改，同时允许各目标保留不同融合策略。
+- 不经 GPU 方言、只把 SiLU 识别抽成助手，能否在不引入 MLIR 的情况下打断前置调查记录的同步修改，同时允许各目标保留不同融合策略。
 
 ---
 
@@ -293,6 +295,11 @@ IREE 网站的 GPU-Metal 部署指南正文是 “Documentation coming soon!”�
 | `llvm/llvm-project` `main` | `f0907c3d807f08a34f45e106c3f28b034b8e8c8e` | 2026-09-15 | [commit](https://github.com/llvm/llvm-project/commit/f0907c3d807f08a34f45e106c3f28b034b8e8c8e) |
 | MLIR GPU 方言文档 | 同上树 `mlir/docs/Dialects/GPU.md` | 同上 | [GPU.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/GPU.md) |
 | MLIR SPIR-V 方言文档 | 同上树 `mlir/docs/Dialects/SPIR-V.md` | 同上 | [SPIR-V.md](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/SPIR-V.md) |
+| MLIR Linalg 方言文档 | 同上树 `mlir/docs/Dialects/Linalg/_index.md` | 同上 | [Linalg](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects/Linalg/_index.md) |
+| `linalg.softmax` ODS | 同上树 `mlir/include/mlir/Dialect/Linalg/IR/LinalgOps.td` | 同上 | [LinalgOps.td](https://github.com/llvm/llvm-project/blob/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/include/mlir/Dialect/Linalg/IR/LinalgOps.td) |
+| LLVM Target 目录（无 Metal） | 同上树 `llvm/lib/Target` | 同上 | [目录](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/llvm/lib/Target) |
+| MLIR Conversion 目录（无 GPUToMetal） | 同上树 `mlir/lib/Conversion` | 同上 | [目录](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/lib/Conversion) |
+| MLIR Dialects 文档目录（无 Metal.md） | 同上树 `mlir/docs/Dialects` | 同上 | [目录](https://github.com/llvm/llvm-project/tree/f0907c3d807f08a34f45e106c3f28b034b8e8c8e/mlir/docs/Dialects) |
 | `iree-org/iree` `main` | `5bd1d9629ee60284fdc56ae61b0c5bc712c78ccf` | 2026-09-15 | [commit](https://github.com/iree-org/iree/commit/5bd1d9629ee60284fdc56ae61b0c5bc712c78ccf) |
 | `KhronosGroup/SPIRV-Cross` `main` | `be71ee8c12cd7dc5ca8fa9581f708c2e8561fe2a` | 2026-09-07 | [commit](https://github.com/KhronosGroup/SPIRV-Cross/commit/be71ee8c12cd7dc5ca8fa9581f708c2e8561fe2a) |
 | `gfx-rs/wgpu` `trunk`（含 naga） | `044e92665050a08110cf1da3809f543719bd1ad0` | 2026-09-15 | [commit](https://github.com/gfx-rs/wgpu/commit/044e92665050a08110cf1da3809f543719bd1ad0) |
