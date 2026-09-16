@@ -8,6 +8,8 @@ use crate::compare::{assert_close, require_dtype, require_shape, CompareError};
 
 pub struct TorchRef {
     pub version: String,
+    pub dtype: String,
+    pub shape: Vec<usize>,
     pub values: Vec<f32>,
 }
 
@@ -72,6 +74,9 @@ if tuple(c.shape) != tuple(a.shape):
 if not torch.isfinite(c).all():
     sys.stderr.write("nonfinite reference\n")
     sys.exit(2)
+dtype = "f32" if c.dtype == torch.float32 else str(c.dtype)
+shape = ",".join(str(int(d)) for d in c.shape)
+sys.stdout.write(f"META dtype={dtype} shape={shape}\n")
 sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
 "#;
     let mut child = Command::new("python3")
@@ -96,8 +101,14 @@ sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
         return Err(RefError::Fail(format!("torch add failed: {err}")));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut lines = stdout.lines();
+    let meta = lines
+        .next()
+        .ok_or_else(|| RefError::Fail("torch produced no META line".into()))?;
+    let (dtype, shape) = parse_meta(meta)?;
+    let body = lines.next().unwrap_or("");
     let mut values = Vec::new();
-    for part in stdout.split(',') {
+    for part in body.split(',') {
         let part = part.trim();
         if part.is_empty() {
             continue;
@@ -107,12 +118,43 @@ sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
         })?;
         values.push(v);
     }
-    Ok(TorchRef { version, values })
+    Ok(TorchRef {
+        version,
+        dtype,
+        shape,
+        values,
+    })
+}
+
+fn parse_meta(line: &str) -> Result<(String, Vec<usize>), RefError> {
+    let line = line.trim();
+    if !line.starts_with("META ") {
+        return Err(RefError::Fail(format!("bad torch META: {line}")));
+    }
+    let mut dtype = None;
+    let mut shape = None;
+    for tok in line.split_whitespace().skip(1) {
+        if let Some(v) = tok.strip_prefix("dtype=") {
+            dtype = Some(v.to_string());
+        } else if let Some(v) = tok.strip_prefix("shape=") {
+            let dims: Result<Vec<usize>, _> = if v.is_empty() {
+                Ok(Vec::new())
+            } else {
+                v.split(',').map(|d| d.parse::<usize>()).collect()
+            };
+            shape = Some(dims.map_err(|e| RefError::Fail(format!("shape: {e}")))?);
+        }
+    }
+    match (dtype, shape) {
+        (Some(d), Some(s)) => Ok((d, s)),
+        _ => Err(RefError::Fail(format!("incomplete torch META: {line}"))),
+    }
 }
 
 /// Check the PyTorch result against the independent hand anchors.
-pub fn check_hand_anchor(case: &Case, got: &[f32]) -> Result<(), CompareError> {
-    require_dtype("f32", case.dtype)?;
-    require_shape(&[got.len()], case.shape)?;
-    assert_close(got, case.hand_expected)
+pub fn check_hand_anchor(case: &Case, got: &TorchRef) -> Result<(), CompareError> {
+    require_dtype(&got.dtype, case.dtype)?;
+    require_shape(&got.shape, case.shape)?;
+    require_shape(&[got.values.len()], case.shape)?;
+    assert_close(&got.values, case.hand_expected)
 }

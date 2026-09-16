@@ -1,7 +1,7 @@
 //! Comparator and completeness self-check. Injections never run on the GPU
 //! and never become the CI Metal path.
 
-use crate::cases::{add_f32_small, delivered_ids, ADD_F32_SMALL_HAND};
+use crate::cases::{add_f32_small, delivered_ids, required_inputs_present, ADD_F32_SMALL_HAND};
 use crate::compare::{assert_close, assert_preserved, require_dtype, require_shape, would_reject};
 use crate::status::{RunSummary, Status};
 
@@ -115,13 +115,15 @@ pub fn run() -> SelfCheck {
         "empty execution was treated as a complete pass",
     );
 
-    // Required input missing.
+    // Required input missing: empty fixture buffers must not be treated as ready.
+    let mut missing = add_f32_small();
+    missing.a = &[];
     reject(
         &mut ok,
         &mut lines,
         "SELF_CHECK_MISSING_INPUT",
-        assert_close(&[], &ADD_F32_SMALL_HAND).is_err(),
-        "empty actual was accepted",
+        required_inputs_present(&missing).is_err(),
+        "empty required input was accepted",
     );
 
     // Device unavailable is unverified, not pass.

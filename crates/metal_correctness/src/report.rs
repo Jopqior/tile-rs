@@ -122,13 +122,7 @@ pub fn log_summary(summary: &RunSummary) {
     log_line(format!(
         "RUN_SUMMARY pass={pass} fail={fail} unverified={unverified} missing={missing}"
     ));
-    let overall = if !summary.complete_list {
-        // Debug single-case runs still report their own overall, but never as
-        // CI-equivalent success of the delivered list.
-        summary.overall()
-    } else {
-        summary.overall()
-    };
+    let overall = summary.overall();
     log_line(format!("RUN_RESULT={}", overall.as_str()));
     if overall != Status::Pass {
         log_line("RUN_SUCCESS=no");
@@ -143,17 +137,8 @@ pub fn exit_code(summary: &RunSummary, self_check_ok: bool) -> i32 {
     if !self_check_ok {
         return 1;
     }
-    if !summary.complete_list {
-        // Single-case debug: non-zero unless that case passed, but never 0
-        // in a way CI could mistake for the full list. The workflow does not
-        // use --case. Exit 0 only if the one case passed, so local reruns
-        // stay usable; CI_EQUIVALENT=no is in the log.
-        return match summary.overall() {
-            Status::Pass => 0,
-            Status::Fail => 1,
-            Status::Unverified => 2,
-        };
-    }
+    // --case may exit 0 for local debug. The workflow never passes --case;
+    // CI_EQUIVALENT=no is always logged in that mode.
     match summary.overall() {
         Status::Pass => 0,
         Status::Fail => 1,

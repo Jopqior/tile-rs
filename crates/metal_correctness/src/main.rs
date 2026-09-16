@@ -32,7 +32,7 @@ mod report;
 mod self_check;
 mod status;
 
-use cases::{case_by_id, delivered_cases, delivered_ids, Case};
+use cases::{case_by_id, delivered_cases, delivered_ids, required_inputs_present, Case};
 use compare::{assert_close, assert_preserved, require_dtype, require_shape};
 use gpu::GpuError;
 use reference::RefError;
@@ -48,7 +48,7 @@ struct Args {
 fn print_help() {
     print!(
         "\
-metal-correctness — current-source Metal emitter to GPU vs PyTorch CPU
+metal-correctness: current-source Metal emitter to GPU vs PyTorch CPU
 
 Usage:
   metal-correctness                 run self-check then the full delivered list
@@ -99,6 +99,9 @@ fn emit_msl(mlir: &str) -> Result<String, String> {
 
 fn run_one(case: &Case) -> (CaseResult, Option<String>) {
     log_case_config(case);
+    if let Err(e) = required_inputs_present(case) {
+        return (CaseResult::fail(case.id, "input", e), None);
+    }
 
     let msl = match emit_msl(case.mlir) {
         Ok(s) => s,
@@ -144,8 +147,11 @@ fn run_one(case: &Case) -> (CaseResult, Option<String>) {
         }
     };
     log_line(format!("PYTORCH_VERSION={}", torch.version));
-    log_line("REFERENCE_DEVICE=cpu");
-    if let Err(e) = reference::check_hand_anchor(case, &torch.values) {
+    log_line(format!(
+        "REFERENCE_DEVICE=cpu dtype={} shape={:?}",
+        torch.dtype, torch.shape
+    ));
+    if let Err(e) = reference::check_hand_anchor(case, &torch) {
         log_msl_or_reason(Some(&msl), "hand anchor vs PyTorch");
         return (
             CaseResult::fail(case.id, "hand_anchor", e.to_string()),
@@ -173,7 +179,7 @@ fn run_one(case: &Case) -> (CaseResult, Option<String>) {
         gpu.device_name, gpu.device_low_power, gpu.device_headless, gpu.threadgroup, gpu.groups
     ));
 
-    if let Err(e) = require_dtype("f32", case.dtype) {
+    if let Err(e) = require_dtype(&torch.dtype, case.dtype) {
         log_msl_or_reason(Some(&msl), "dtype");
         return (CaseResult::fail(case.id, "compare", e.to_string()), Some(msl));
     }
@@ -189,10 +195,19 @@ fn run_one(case: &Case) -> (CaseResult, Option<String>) {
             Some(msl),
         );
     }
-    if let Err(e) = require_shape(&[out_n], case.shape) {
-        log_msl_or_reason(Some(&msl), "shape");
+    if let Err(e) = require_shape(&torch.shape, case.shape) {
+        log_msl_or_reason(Some(&msl), "reference shape");
         return (CaseResult::fail(case.id, "compare", e.to_string()), Some(msl));
     }
+    if let Err(e) = require_shape(&[out_n], case.shape) {
+        log_msl_or_reason(Some(&msl), "declared shape");
+        return (CaseResult::fail(case.id, "compare", e.to_string()), Some(msl));
+    }
+    if let Err(e) = require_shape(&[gpu.out[..out_n].len()], &torch.shape) {
+        log_msl_or_reason(Some(&msl), "readback shape vs reference");
+        return (CaseResult::fail(case.id, "compare", e.to_string()), Some(msl));
+    }
+    log_line("READBACK_DTYPE=f32");
     if let Err(e) = assert_close(&gpu.out[..out_n], &torch.values) {
         log_msl_or_reason(Some(&msl), "numerical mismatch");
         return (CaseResult::fail(case.id, "compare", e.to_string()), Some(msl));

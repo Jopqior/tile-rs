@@ -93,3 +93,27 @@ pub fn delivered_ids() -> Vec<&'static str> {
 pub fn case_by_id(id: &str) -> Option<Case> {
     delivered_cases().into_iter().find(|c| c.id == id)
 }
+
+/// Required input buffers must be present, same length, and match the hand
+/// anchors. Empty or truncated fixtures are a fail, not a skip.
+pub fn required_inputs_present(case: &Case) -> Result<(), String> {
+    if case.a.is_empty() || case.b.is_empty() || case.hand_expected.is_empty() {
+        return Err("required input buffer is empty".into());
+    }
+    if case.a.len() != case.b.len() || case.a.len() != case.hand_expected.len() {
+        return Err(format!(
+            "input length mismatch a={} b={} hand={}",
+            case.a.len(),
+            case.b.len(),
+            case.hand_expected.len()
+        ));
+    }
+    if case.shape.len() != 1 || case.shape[0] != case.a.len() {
+        return Err(format!(
+            "declared shape {:?} does not match input length {}",
+            case.shape,
+            case.a.len()
+        ));
+    }
+    Ok(())
+}
