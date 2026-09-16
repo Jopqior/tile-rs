@@ -26,6 +26,11 @@ jobs:
 
       - name: Install Rust
         uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          # The action defaults RUSTFLAGS to -D warnings. The emitter sources
+          # carry warnings (unreachable match arms, unused imports) that are
+          # not coverage failures, so do not promote them.
+          rustflags: ""
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
