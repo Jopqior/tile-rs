@@ -188,9 +188,20 @@ mod macos {
 
         let thread_execution_width = pipeline.thread_execution_width() as u64;
         let pipeline_threadgroup_max = pipeline.max_total_threads_per_threadgroup() as u64;
-        let n = case.output_len() as u64;
-        // Dispatch at the discovered device threadgroup size. Boundaries in the
-        // case list were instantiated from the same number.
+        let n = case.n() as u64;
+        // This entry's cases share one entry semantics (flat 1-D elementwise),
+        // so they are sized and dispatched with the one grid the device
+        // discovered: no fixed 32/256 contract. A kernel whose own pipeline
+        // reports a smaller SIMD width or threadgroup limit would mean the
+        // instantiated boundaries no longer describe it, so that is a loud
+        // failure rather than a silently different grid.
+        if thread_execution_width != caps.simd_width as u64 {
+            return Err(GpuError::Fail(format!(
+                "pipeline thread_execution_width={thread_execution_width} differs from the \
+                 device SIMD width={} used to instantiate case sizes",
+                caps.simd_width
+            )));
+        }
         let threadgroup = caps.threadgroup_max as u64;
         if pipeline_threadgroup_max < threadgroup {
             return Err(GpuError::Fail(format!(
@@ -207,7 +218,7 @@ mod macos {
 
         let input_bufs: Vec<Buffer> = case.inputs.iter().map(|x| fill_shared(&device, x)).collect();
         let out_init: Vec<f32> =
-            vec![crate::cases::OUTPUT_SENTINEL; case.output_len() + case.preserve_pad];
+            vec![crate::cases::OUTPUT_SENTINEL; case.n() + case.preserve_pad];
         let out_buf = fill_shared(&device, &out_init);
         let n_buf = fill_shared_u32(&device, n as u32);
 
@@ -245,7 +256,7 @@ mod macos {
             pipeline_threadgroup_max,
             thread_execution_width,
             inputs,
-            out: read_f32(&out_buf, case.output_len() + case.preserve_pad),
+            out: read_f32(&out_buf, case.n() + case.preserve_pad),
         })
     }
 }

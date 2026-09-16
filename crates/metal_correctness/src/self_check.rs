@@ -122,6 +122,18 @@ pub fn run() -> SelfCheck {
         "tail miss was accepted",
     );
 
+    // A skipped write leaves the pre-dispatch sentinel in a declared output.
+    // The comparator must reject the sentinel, not treat it as a value.
+    let mut skipped = expected.clone();
+    skipped[3] = crate::cases::OUTPUT_SENTINEL;
+    reject(
+        &mut ok,
+        &mut lines,
+        "SELF_CHECK_SKIPPED_WRITE",
+        would_reject(&skipped, &expected),
+        "a skipped write left at the sentinel was accepted",
+    );
+
     // Shape / dtype.
     reject(
         &mut ok,

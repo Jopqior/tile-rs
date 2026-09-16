@@ -199,7 +199,7 @@ fn verify_one(case: &Case, caps: Option<&DeviceCaps>) -> CaseResult {
         gpu.thread_execution_width
     ));
 
-    let n = case.output_len();
+    let n = case.n();
     if let Err(e) = require_dtype(&torch.dtype, case.dtype) {
         log_msl_or_reason(Some(&msl), "dtype");
         return CaseResult::fail(case.id.clone(), "compare", e.to_string());

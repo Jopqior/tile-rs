@@ -153,7 +153,6 @@ pub struct CaseSpec {
     pub size: SizePlan,
     /// True when literal hand anchors exist for this case.
     pub hand: bool,
-    pub preserve_pad: usize,
 }
 
 fn spec(id: &str, op: RefOp, size: SizePlan, hand: bool) -> CaseSpec {
@@ -162,7 +161,6 @@ fn spec(id: &str, op: RefOp, size: SizePlan, hand: bool) -> CaseSpec {
         op,
         size,
         hand,
-        preserve_pad: PRESERVE_PAD,
     }
 }
 
@@ -171,7 +169,6 @@ fn spec(id: &str, op: RefOp, size: SizePlan, hand: bool) -> CaseSpec {
 pub struct Case {
     pub id: String,
     pub op: RefOp,
-    pub meaning: &'static str,
     pub mlir: String,
     pub kernel_name: String,
     pub dtype: &'static str,
@@ -184,15 +181,10 @@ pub struct Case {
     pub hand_anchor: bool,
     pub preserve_pad: usize,
     pub size_note: String,
-    pub binding_note: &'static str,
 }
 
 impl Case {
     pub fn n(&self) -> usize {
-        self.shape[0]
-    }
-
-    pub fn output_len(&self) -> usize {
         self.shape[0]
     }
 }
@@ -320,7 +312,6 @@ pub fn materialize(spec: &CaseSpec, caps: Option<&DeviceCaps>) -> Result<Case, S
     Ok(Case {
         id: spec.id.clone(),
         op: spec.op,
-        meaning: spec.op.meaning(),
         mlir,
         kernel_name,
         dtype: "f32",
@@ -329,9 +320,8 @@ pub fn materialize(spec: &CaseSpec, caps: Option<&DeviceCaps>) -> Result<Case, S
         inputs,
         expected_anchor,
         hand_anchor,
-        preserve_pad: spec.preserve_pad,
+        preserve_pad: PRESERVE_PAD,
         size_note: format!("{} (n={n})", spec.size.label()),
-        binding_note: spec.op.binding_note(),
     })
 }
 
@@ -354,9 +344,9 @@ pub fn mlir_for(op: RefOp, kernel_name: &str, n: usize) -> String {
             .to_string(),
         RefOp::AddMul => r#"    %a = llvm.call @__tile_load_f32(%arg0, %r, %c) : (!llvm.ptr<1>, i32, i32) -> i32
     %b = llvm.call @__tile_load_f32(%arg1, %r, %c) : (!llvm.ptr<1>, i32, i32) -> i32
-    %c = llvm.call @__tile_load_f32(%arg2, %r, %c) : (!llvm.ptr<1>, i32, i32) -> i32
+    %d = llvm.call @__tile_load_f32(%arg2, %r, %c) : (!llvm.ptr<1>, i32, i32) -> i32
     %s = llvm.call @__tile_add_f32(%a, %b, %r, %c) : (i32, i32, i32, i32) -> i32
-    %y = llvm.call @__tile_mul_f32(%s, %c, %r, %c) : (i32, i32, i32, i32) -> i32
+    %y = llvm.call @__tile_mul_f32(%s, %d, %r, %c) : (i32, i32, i32, i32) -> i32
     llvm.call @__tile_store_f32(%arg3, %y, %r, %c) : (!llvm.ptr<1>, i32, i32, i32) -> ()"#
             .to_string(),
     };
@@ -434,6 +424,15 @@ fn gen_inputs(op: RefOp, n: usize) -> Vec<Vec<f32>> {
             (RefOp::Add, 1) => {
                 // Exact cancellation against operand 0 at a fixed stride.
                 for i in (0..n).step_by(5) {
+                    v[i] = -inputs[0][i];
+                }
+            }
+            (RefOp::Sub, 1) => {
+                // Equal at a stride gives an exact zero; negated gives a-b = 2a.
+                for i in (0..n).step_by(5) {
+                    v[i] = inputs[0][i];
+                }
+                for i in (1..n).step_by(5) {
                     v[i] = -inputs[0][i];
                 }
             }

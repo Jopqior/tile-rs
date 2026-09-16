@@ -128,6 +128,7 @@ fn self_check_covers_every_path_and_the_combination_order() {
         "SELF_CHECK_HAND_ADD_MUL=pass",
         "SELF_CHECK_COMBO_ORDER=rejected",
         "SELF_CHECK_TAIL_MISS=rejected",
+        "SELF_CHECK_SKIPPED_WRITE=rejected",
         "SELF_CHECK_DROPPED_CASE=rejected",
         "SELF_CHECK_NO_DEVICE_SIZE=rejected",
     ] {
@@ -135,8 +136,11 @@ fn self_check_covers_every_path_and_the_combination_order() {
     }
 }
 
+/// Local diagnostic, not GPU evidence: the two-step order also has to be
+/// verified numerically by the GPU combination cases on the macos-15 runner.
+/// This only catches a locally obvious wrong-association emission off-device.
 #[test]
-fn combination_case_emits_the_declared_two_step_order() {
+fn combination_case_emits_the_declared_two_step_order_local_diagnostic() {
     let out = bin()
         .args(["--case", "add_mul_f32_small"])
         .env("METAL_CORRECTNESS_DUMP_MSL", "1")
@@ -154,18 +158,23 @@ fn combination_case_emits_the_declared_two_step_order() {
 }
 
 #[test]
-fn device_relative_case_without_a_device_is_unverified_not_pass() {
+fn device_relative_case_is_unverified_not_pass_off_the_full_list() {
     let out = bin()
         .args(["--case", "add_f32_vec"])
         .output()
         .expect("run metal-correctness --case add_f32_vec");
     let text = output_text(&out);
-    assert!(
-        !out.status.success(),
-        "a device-relative case must not succeed without a device\n{text}"
+    // Off the full list with no PyTorch reference (and possibly no device), the
+    // case must be unverified. It must never claim a GPU pass or exit 0.
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "a single device-relative case without a verified reference must exit unverified\n{text}"
     );
     assert!(
-        text.contains("CASE_UNAVAILABLE") || text.contains("GPU_UNVERIFIED"),
+        text.contains("CASE_UNAVAILABLE")
+            || text.contains("GPU_UNVERIFIED")
+            || text.contains("REFERENCE_UNVERIFIED"),
         "device-relative case failure reason missing\n{text}"
     );
     assert!(

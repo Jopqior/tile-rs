@@ -80,7 +80,7 @@ fn log_array_summary(name: &str, values: &[f32]) {
 
 pub fn log_case_config(case: &Case) {
     log_line(format!("CASE id={}", case.id));
-    log_line(format!("CASE_MEANING={}", case.meaning));
+    log_line(format!("CASE_MEANING={}", case.op.meaning()));
     log_line(format!(
         "CASE_OP={} arity={}",
         case.op.tag(),
@@ -93,7 +93,8 @@ pub fn log_case_config(case: &Case) {
     ));
     log_line(format!(
         "CASE_BINDINGS {} kernel={}",
-        case.binding_note, case.kernel_name
+        case.op.binding_note(),
+        case.kernel_name
     ));
     log_line(format!(
         "CASE_PRESERVE inputs=0..{} output_pad={} sentinel_init",

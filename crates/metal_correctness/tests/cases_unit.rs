@@ -6,5 +6,7 @@
 //! compile `cases.rs`'s tests. Including it from an integration test target
 //! turns `cfg(test)` on for that module.
 
+#![allow(dead_code)]
+
 #[path = "../src/cases.rs"]
 mod cases;
