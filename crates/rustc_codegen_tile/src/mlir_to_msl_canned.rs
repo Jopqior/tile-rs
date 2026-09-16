@@ -2667,15 +2667,20 @@ pub(super) fn emit_flash_attn_ext_blk_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
 }
-/// DS4 dsv4_indexer_score_one_direct: per-row 64-head fused indexer scoring.
+/// DS4 dsv4_indexer_score_one_direct: per-row fused indexer scoring for one token.
 /// Buffers (all char*): p0=q, p1=weights, p2=index_comp, p3=scores.
 /// Per-row threadgroup (row=tgpig.x). 4 simdgroups of 32 lanes (128 threads).
-/// Stage 128-wide compressed key row into ktg shmem, walk 64 heads in groups of 4
-/// (one per simdgroup), simd_sum dot product, accumulate ReLU(s) * w[head] * scale.
-pub(super) fn emit_dsv4_indexer_score_one_direct_msl(out: &mut String) {
+/// Stage the compressed key row into ktg shmem, walk `n_head` heads in groups of
+/// 4 (one per simdgroup), simd_sum dot product, accumulate ReLU(s) * w[head] * scale.
+///
+/// The head dimension is not a parameter: the dot product reads one `float4`
+/// per lane of a 32-lane simdgroup, so a head is 4 * 32 = 128 components, and
+/// the 128-thread group is what runs four heads at once. `n_head` must be a
+/// multiple of 4 for the same reason.
+pub(super) fn emit_dsv4_indexer_score_one_direct_generic_msl(out: &mut String, n_head: u32) {
     writeln!(
         out,
-        "    // hardcoded: n_head=64, head_dim=128, ntg=128 (4 sg of 32)"
+        "    // hardcoded: n_head={n_head}, head_dim=128, ntg=128 (4 sg of 32)"
     )
     .unwrap();
     writeln!(out, "    if (row >= n_comp) return;").unwrap();
@@ -2691,7 +2696,7 @@ pub(super) fn emit_dsv4_indexer_score_one_direct_msl(out: &mut String) {
     writeln!(out, "    float acc = 0.0f;").unwrap();
     writeln!(
         out,
-        "    for (uint head0 = 0u; head0 < 64u; head0 += 4u) {{"
+        "    for (uint head0 = 0u; head0 < {n_head}u; head0 += 4u) {{"
     )
     .unwrap();
     writeln!(out, "        uint head = head0 + simd_id;").unwrap();
@@ -2738,6 +2743,23 @@ pub(super) fn emit_dsv4_indexer_score_one_direct_msl(out: &mut String) {
     writeln!(out, "        device float * dst = (device float *)p3;").unwrap();
     writeln!(out, "        dst[row] = acc;").unwrap();
     writeln!(out, "    }}").unwrap();
+}
+/// DS4 indexer_score_one_direct at the shipped 64 heads.
+pub(super) fn emit_dsv4_indexer_score_one_direct_msl(out: &mut String) {
+    emit_dsv4_indexer_score_one_direct_generic_msl(out, INDEXER_SCORE_ONE_DS4_N_HEAD);
+}
+
+/// Heads the DeepSeek-V4 indexer uses.
+pub(super) const INDEXER_SCORE_ONE_DS4_N_HEAD: u32 = 64;
+
+/// Why `n_head` cannot be emitted for indexer_score_one_direct, if it cannot.
+pub(super) fn check_indexer_score_one_n_head(n_head: u32) -> Result<(), String> {
+    if n_head == 0 || n_head % 4 != 0 {
+        return Err(format!(
+            "indexer_score_one_direct: n_head {n_head} must be a positive multiple of 4 (four heads per 128-thread step)"
+        ));
+    }
+    Ok(())
 }
 /// DS4 dsv4_router_finalize_one: 256-thread bitonic top-6 over (probs+bias).
 /// Buffers: p0=probs(float), p1=bias(float), p2=hash(int), p3=tokens(int), p4=selected(int, out).

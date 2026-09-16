@@ -484,6 +484,9 @@ struct MslContext {
     /// Shape read from a `__tile_indexer_scores_tiled_*` call's operands, or why
     /// it could not be read. `None` until such a call is classified.
     indexer_shape: Option<Result<IndexerScoresTiled, String>>,
+    /// Head count read from a `__tile_indexer_score_one_direct_f32` call, or why
+    /// it could not be read.
+    indexer_one_n_head: Option<Result<u32, String>>,
 }
 
 impl MslContext {
@@ -502,6 +505,7 @@ impl MslContext {
             tile_width: 256,
             dtype: "f32".into(),
             indexer_shape: None,
+            indexer_one_n_head: None,
         }
     }
 
@@ -8428,7 +8432,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4Fp8KvQuantize => emit_dsv4_fp8_kv_quantize_msl(out),
         KernelType::FlashAttnExtPad => emit_flash_attn_ext_pad_msl(out),
         KernelType::FlashAttnExtBlk => emit_flash_attn_ext_blk_msl(out),
-        KernelType::Dsv4IndexerScoreOneDirect => emit_dsv4_indexer_score_one_direct_msl(out),
+        KernelType::Dsv4IndexerScoreOneDirect => {
+            let n_head = match &ctx.indexer_one_n_head {
+                Some(Ok(n)) => *n,
+                Some(Err(why)) => return Err(why.clone()),
+                None => INDEXER_SCORE_ONE_DS4_N_HEAD,
+            };
+            emit_dsv4_indexer_score_one_direct_generic_msl(out, n_head)
+        }
         KernelType::Dsv4RouterFinalizeOne => emit_dsv4_router_finalize_one_msl(out),
         KernelType::Dsv4IndexerScoresTiledF32 | KernelType::Dsv4IndexerScoresTiled => {
             let shape = match &ctx.indexer_shape {
@@ -10185,6 +10196,18 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_indexer_score_one_direct_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4IndexerScoreOneDirect;
+                        // 8 operands, or 9 with a constant n_head.
+                        ctx.indexer_one_n_head = Some(match args.len() {
+                            8 => Ok(INDEXER_SCORE_ONE_DS4_N_HEAD),
+                            9 => match ctx.resolve_const(args[8].trim()) {
+                                0 => Err(format!(
+                                    "{callee}: operand 8 (n_head) must be a positive integer constant, got `{}`",
+                                    args[8].trim()
+                                )),
+                                n => check_indexer_score_one_n_head(n).map(|()| n),
+                            },
+                            n => Err(format!("{callee}: expected 8 operands, or 9 with n_head; got {n}")),
+                        });
                     }
                 }
                 "__tile_router_finalize_one_f32" => {

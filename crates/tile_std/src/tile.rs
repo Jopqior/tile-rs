@@ -611,8 +611,13 @@ extern "C" {
         c_ncpsg: u32,
     ) -> u32;
 
-    /// DS4 dsv4_indexer_score_one_direct: per-row fused 64-head scoring.
-    /// Buffers: q, weights, index_comp, scores.
+    /// DS4 indexer scoring for one token: per compressed key, the sum over heads
+    /// of relu(q . k) * weight * scale. Buffers: q, weights, index_comp, scores.
+    ///
+    /// `n_head` must be a compile-time constant and a multiple of 4. The head
+    /// dimension is fixed at 128 by the kernel's layout (one float4 per lane of
+    /// a 32-lane simdgroup). Dispatch (n_comp, 1, 1) threadgroups of 128 threads.
+    /// DeepSeek-V4 uses 64 heads.
     pub fn __tile_indexer_score_one_direct_f32(
         q: u32,
         weights: u32,
@@ -622,6 +627,7 @@ extern "C" {
         q_head_stride: u32,
         index_row_stride: u32,
         scale: u32,
+        n_head: u32,
     ) -> u32;
 
     /// DS4 dsv4_router_finalize_one: 256-thread bitonic top-6 over (probs+bias).
