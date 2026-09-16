@@ -640,8 +640,14 @@ extern "C" {
         hash_rows: u32,
     ) -> u32;
 
-    /// DS4 dsv4_indexer_scores_tiled_f32: 8x32 tile fused indexer scoring with simdgroup matmul.
+    /// DS4 indexer scoring: per token and compressed key, the sum over heads of
+    /// relu(q . k) * weight * scale, with keys past the causal ratio window at -inf.
     /// Buffers: q, weights, index_comp, scores (all char*).
+    ///
+    /// `head_dim` and `tile_cols` must be compile-time constants: they size the
+    /// kernel's tiles. `head_dim` and `tile_cols` are multiples of 8, and the
+    /// kernel is dispatched with `tile_cols * 4` threads per threadgroup over a
+    /// (ceil(n_comp / tile_cols), ceil(n_tokens / 8)) grid. DeepSeek-V4 uses 128 and 32.
     pub fn __tile_indexer_scores_tiled_f32(
         q: u32,
         weights: u32,
@@ -658,6 +664,8 @@ extern "C" {
         index_row_stride: u32,
         score_token_stride: u32,
         scale: u32,
+        head_dim: u32,
+        tile_cols: u32,
     ) -> u32;
 
     /// DS4 dsv4_indexed_mixed_attention_heads8: ratio-4 mixed attention,
@@ -3346,6 +3354,8 @@ extern "C" {
         index_row_stride: u32,
         score_token_stride: u32,
         scale: u32,
+        head_dim: u32,
+        tile_cols: u32,
     ) -> u32;
 
     /// Causal mask: fills upper-triangular portion of (S, S) tile with -inf.

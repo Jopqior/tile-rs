@@ -481,6 +481,9 @@ struct MslContext {
     kernel_type: KernelType,
     tile_width: u32,
     dtype: String,
+    /// Shape read from a `__tile_indexer_scores_tiled_*` call's operands, or why
+    /// it could not be read. `None` until such a call is classified.
+    indexer_shape: Option<Result<IndexerScoresTiled, String>>,
 }
 
 impl MslContext {
@@ -498,6 +501,7 @@ impl MslContext {
             kernel_type: KernelType::Copy,
             tile_width: 256,
             dtype: "f32".into(),
+            indexer_shape: None,
         }
     }
 
@@ -8426,8 +8430,21 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::FlashAttnExtBlk => emit_flash_attn_ext_blk_msl(out),
         KernelType::Dsv4IndexerScoreOneDirect => emit_dsv4_indexer_score_one_direct_msl(out),
         KernelType::Dsv4RouterFinalizeOne => emit_dsv4_router_finalize_one_msl(out),
-        KernelType::Dsv4IndexerScoresTiledF32 => emit_dsv4_indexer_scores_tiled_f32_msl(out),
-        KernelType::Dsv4IndexerScoresTiled => emit_dsv4_indexer_scores_tiled_msl(out),
+        KernelType::Dsv4IndexerScoresTiledF32 | KernelType::Dsv4IndexerScoresTiled => {
+            let shape = match &ctx.indexer_shape {
+                Some(Ok(shape)) => *shape,
+                Some(Err(why)) => return Err(why.clone()),
+                None => IndexerScoresTiled::ds4(
+                    if ctx.kernel_type == KernelType::Dsv4IndexerScoresTiled {
+                        IndexerElem::Half
+                    } else {
+                        IndexerElem::Float
+                    },
+                ),
+            };
+            shape.check()?;
+            emit_dsv4_indexer_scores_tiled_generic_msl(out, &shape)
+        }
         KernelType::Dsv4IndexedMixedAttentionH8 => emit_dsv4_indexed_mixed_attention_h8_msl(out),
         KernelType::Dsv4IndexedMixedAttentionH8Rb4 => {
             emit_dsv4_indexed_mixed_attention_h8_rb4_msl(out)
@@ -9657,6 +9674,46 @@ fn emit_partition_cell_msl(out: &mut String, num_bufs: usize) {
     writeln!(out, "    }}").unwrap();
 }
 
+/// Read the shape of a `__tile_indexer_scores_tiled_*` call.
+///
+/// The intrinsic takes 15 operands (4 buffers, 11 runtime scalars) followed by
+/// two optional compile-time operands, `head_dim` and `tile_cols`. With neither
+/// present the DeepSeek-V4 shape is used. When present they must be constants,
+/// because they size threadgroup arrays and the dispatch geometry.
+fn indexer_shape_from_operands(
+    callee: &str,
+    args: &[String],
+    elem: IndexerElem,
+    ctx: &MslContext,
+) -> Result<IndexerScoresTiled, String> {
+    let mut shape = IndexerScoresTiled::ds4(elem);
+    match args.len() {
+        15 => {}
+        17 => {
+            let read = |i: usize, what: &str| -> Result<u32, String> {
+                let v = ctx.resolve_const(args[i].trim());
+                if v == 0 {
+                    Err(format!(
+                        "{callee}: operand {i} ({what}) must be a positive integer constant, got `{}`",
+                        args[i].trim()
+                    ))
+                } else {
+                    Ok(v)
+                }
+            };
+            shape.head_dim = read(15, "head_dim")?;
+            shape.tile_cols = read(16, "tile_cols")?;
+        }
+        n => {
+            return Err(format!(
+                "{callee}: expected 15 operands, or 17 with head_dim and tile_cols; got {n}"
+            ))
+        }
+    }
+    shape.check()?;
+    Ok(shape)
+}
+
 fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
     let mut store_map: HashMap<String, String> = HashMap::new();
 
@@ -10135,14 +10192,16 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                         ctx.kernel_type = KernelType::Dsv4RouterFinalizeOne;
                     }
                 }
-                "__tile_indexer_scores_tiled_f32" => {
+                "__tile_indexer_scores_tiled_f32" | "__tile_indexer_scores_tiled_bf16" => {
                     if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4IndexerScoresTiledF32;
-                    }
-                }
-                "__tile_indexer_scores_tiled_bf16" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4IndexerScoresTiled;
+                        let half = callee.ends_with("_bf16");
+                        ctx.kernel_type = if half {
+                            KernelType::Dsv4IndexerScoresTiled
+                        } else {
+                            KernelType::Dsv4IndexerScoresTiledF32
+                        };
+                        let elem = if half { IndexerElem::Half } else { IndexerElem::Float };
+                        ctx.indexer_shape = Some(indexer_shape_from_operands(&callee, &args, elem, ctx));
                     }
                 }
                 "__tile_indexed_mixed_attention_h8_f32" => {

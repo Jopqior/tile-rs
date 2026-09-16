@@ -23,3 +23,7 @@ default = []
 # `emitters` wires the open MLIR->source emitter: the Apple Metal (MSL) arm and
 # the target-neutral MLIR parser it reads. Std-only, builds anywhere.
 emitters = []
+
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+# GPU check for emitted Metal kernels (tests/msl_indexer_scores_tiled.rs).
+metal = "0.29"

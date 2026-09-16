@@ -2822,15 +2822,83 @@ pub(super) fn emit_dsv4_router_finalize_one_msl(out: &mut String) {
 /// Each tg covers 8 tokens × 32 compressed rows × 64 heads. K is staged once into shmem,
 /// Q is restaged per head, simdgroup_float8x8 matmul produces 8x32 score subtile per head.
 /// score[t,c] = sum_h relu(dot(Q[t,h], K[c])) * W[t,h] * scale; causal masking on store.
-pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
+/// Element type the indexer kernel stages Q and K in and multiplies with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum IndexerElem {
+    Float,
+    Half,
+}
+
+/// Shape of the tiled indexer-score kernel, taken from its intrinsic operands.
+///
+/// Q and K are staged into threadgroup memory and multiplied with 8x8
+/// simdgroup matrices, so a tile is 8 tokens (`TM`) by `tile_cols` compressed
+/// keys, and `head_dim` is walked 8 columns at a time. Each thread writes two
+/// score cells and a simdgroup is 32 threads wide, so a threadgroup holds
+/// `tile_cols * 4` threads: one simdgroup per 8 key columns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct IndexerScoresTiled {
+    pub elem: IndexerElem,
+    pub head_dim: u32,
+    pub tile_cols: u32,
+}
+
+impl IndexerScoresTiled {
+    /// The shape the DeepSeek-V4 engine ships: head_dim 128, 32 keys per tile.
+    pub const DS4_HEAD_DIM: u32 = 128;
+    pub const DS4_TILE_COLS: u32 = 32;
+
+    pub fn ds4(elem: IndexerElem) -> Self {
+        Self { elem, head_dim: Self::DS4_HEAD_DIM, tile_cols: Self::DS4_TILE_COLS }
+    }
+
+    /// Threads per threadgroup the kernel must be dispatched with.
+    pub fn threads_per_group(&self) -> u32 {
+        self.tile_cols * 4
+    }
+
+    /// Why this shape cannot be emitted, if it cannot.
+    pub fn check(&self) -> Result<(), String> {
+        let (d, tn) = (self.head_dim, self.tile_cols);
+        if d == 0 || d % 8 != 0 {
+            return Err(format!(
+                "indexer_scores_tiled: head_dim {d} must be a positive multiple of 8 (8x8 simdgroup tiles)"
+            ));
+        }
+        if tn == 0 || tn % 8 != 0 {
+            return Err(format!(
+                "indexer_scores_tiled: tile_cols {tn} must be a positive multiple of 8 (one simdgroup per 8 keys)"
+            ));
+        }
+        if self.threads_per_group() > 1024 {
+            return Err(format!(
+                "indexer_scores_tiled: tile_cols {tn} needs {} threads per group; Metal allows 1024",
+                self.threads_per_group()
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// DS4 indexer_scores_tiled for any element type, head dimension and tile width.
+/// Per token and compressed key: the sum over heads of relu(q . k) * weight *
+/// scale, with keys past the causal ratio window set to -inf.
+pub(super) fn emit_dsv4_indexer_scores_tiled_generic_msl(out: &mut String, shape: &IndexerScoresTiled) {
+    let d = shape.head_dim;
+    let tn = shape.tile_cols;
+    let threads = shape.threads_per_group();
+    let (e, zero, load_row, load_qrow) = match shape.elem {
+        IndexerElem::Float => ("float", "0.0f", "row[d]", "qrow[d]"),
+        IndexerElem::Half => ("half", "half(0.0f)", "half(row[d])", "half(qrow[d])"),
+    };
     writeln!(out, "    constexpr uint TM = 8u;").unwrap();
-    writeln!(out, "    constexpr uint TN = 32u;").unwrap();
+    writeln!(out, "    constexpr uint TN = {tn}u;").unwrap();
     writeln!(out, "    constexpr uint TS = 8u;").unwrap();
-    writeln!(out, "    constexpr uint D  = 128u;").unwrap();
+    writeln!(out, "    constexpr uint D  = {d}u;").unwrap();
     writeln!(out, "    uint c0 = tgpig.x * TN;").unwrap();
     writeln!(out, "    uint t0 = tgpig.y * TM;").unwrap();
-    writeln!(out, "    threadgroup float qtg[TM*D];").unwrap();
-    writeln!(out, "    threadgroup float ktg[TN*D];").unwrap();
+    writeln!(out, "    threadgroup {e} qtg[TM*D];").unwrap();
+    writeln!(out, "    threadgroup {e} ktg[TN*D];").unwrap();
     writeln!(out, "    threadgroup float dotsh[TM*TN];").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    uint last_token = min(t0 + TM, n_tokens);").unwrap();
@@ -2840,7 +2908,7 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "    if (c0 >= max_visible) {{").unwrap();
-    writeln!(out, "        for (uint i = tid; i < TM*TN; i += 128u) {{").unwrap();
+    writeln!(out, "        for (uint i = tid; i < TM*TN; i += {threads}u) {{").unwrap();
     writeln!(out, "            uint r = i / TN; uint cc = i - r*TN;").unwrap();
     writeln!(out, "            uint token = t0 + r; uint comp = c0 + cc;").unwrap();
     writeln!(out, "            if (token < n_tokens && comp < n_comp) {{").unwrap();
@@ -2851,13 +2919,13 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
     writeln!(out, "        return;").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    for (uint i = tid; i < TN*D; i += 128u) {{").unwrap();
+    writeln!(out, "    for (uint i = tid; i < TN*D; i += {threads}u) {{").unwrap();
     writeln!(out, "        uint cc = i / D; uint d = i - cc*D;").unwrap();
     writeln!(out, "        uint comp = c0 + cc;").unwrap();
-    writeln!(out, "        float v = 0.0f;").unwrap();
+    writeln!(out, "        {e} v = {zero};").unwrap();
     writeln!(out, "        if (comp < n_comp) {{").unwrap();
     writeln!(out, "            device const float * row = (device const float *)(p2 + (uint64_t)comp * index_row_stride);").unwrap();
-    writeln!(out, "            v = row[d];").unwrap();
+    writeln!(out, "            v = {load_row};").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "        ktg[i] = v;").unwrap();
     writeln!(out, "    }}").unwrap();
@@ -2874,13 +2942,13 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
     writeln!(out, "    threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    for (uint head = 0u; head < n_head; ++head) {{").unwrap();
-    writeln!(out, "        for (uint i = tid; i < TM*D; i += 128u) {{").unwrap();
+    writeln!(out, "        for (uint i = tid; i < TM*D; i += {threads}u) {{").unwrap();
     writeln!(out, "            uint r = i / D; uint d = i - r*D;").unwrap();
     writeln!(out, "            uint token = t0 + r;").unwrap();
-    writeln!(out, "            float v = 0.0f;").unwrap();
+    writeln!(out, "            {e} v = {zero};").unwrap();
     writeln!(out, "            if (token < n_tokens) {{").unwrap();
     writeln!(out, "                device const float * qrow = (device const float *)(p0 + (uint64_t)token * q_token_stride + (uint64_t)head * q_head_stride);").unwrap();
-    writeln!(out, "                v = qrow[d];").unwrap();
+    writeln!(out, "                v = {load_qrow};").unwrap();
     writeln!(out, "            }}").unwrap();
     writeln!(out, "            qtg[i] = v;").unwrap();
     writeln!(out, "        }}").unwrap();
@@ -2896,8 +2964,8 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "        for (uint db = 0u; db < D/TS; ++db) {{").unwrap();
-    writeln!(out, "            simdgroup_float8x8 mq;").unwrap();
-    writeln!(out, "            simdgroup_float8x8 mk;").unwrap();
+    writeln!(out, "            simdgroup_{e}8x8 mq;").unwrap();
+    writeln!(out, "            simdgroup_{e}8x8 mk;").unwrap();
     writeln!(
         out,
         "            simdgroup_load(mq, qtg + db*TS, D, 0, false);"
@@ -2961,147 +3029,13 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
     writeln!(out, "        *dst = (comp1 < visible) ? acc1 : -INFINITY;").unwrap();
     writeln!(out, "    }}").unwrap();
 }
-/// DS4 indexer_scores_tiled (bf16 K variant).
-/// Same shape as TiledF32: 8x32 tile, simdgroup_half8x8 for mq/mk, simdgroup_float8x8 for mdot.
-/// Q and K are staged through threadgroup `half` buffers to use the simdgroup half-matrix path.
+/// DS4 dsv4_indexer_scores_tiled_f32 at the shipped shape.
+pub(super) fn emit_dsv4_indexer_scores_tiled_f32_msl(out: &mut String) {
+    emit_dsv4_indexer_scores_tiled_generic_msl(out, &IndexerScoresTiled::ds4(IndexerElem::Float));
+}
+/// DS4 indexer_scores_tiled with Q and K staged as half, at the shipped shape.
 pub(super) fn emit_dsv4_indexer_scores_tiled_msl(out: &mut String) {
-    writeln!(out, "    constexpr uint TM = 8u;").unwrap();
-    writeln!(out, "    constexpr uint TN = 32u;").unwrap();
-    writeln!(out, "    constexpr uint TS = 8u;").unwrap();
-    writeln!(out, "    constexpr uint D  = 128u;").unwrap();
-    writeln!(out, "    uint c0 = tgpig.x * TN;").unwrap();
-    writeln!(out, "    uint t0 = tgpig.y * TM;").unwrap();
-    writeln!(out, "    threadgroup half qtg[TM*D];").unwrap();
-    writeln!(out, "    threadgroup half ktg[TN*D];").unwrap();
-    writeln!(out, "    threadgroup float dotsh[TM*TN];").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    uint last_token = min(t0 + TM, n_tokens);").unwrap();
-    writeln!(
-        out,
-        "    uint max_visible = (last_token > t0) ? min((pos0 + last_token) / ratio, n_comp) : 0u;"
-    )
-    .unwrap();
-    writeln!(out, "    if (c0 >= max_visible) {{").unwrap();
-    writeln!(out, "        for (uint i = tid; i < TM*TN; i += 128u) {{").unwrap();
-    writeln!(out, "            uint r = i / TN; uint cc = i - r*TN;").unwrap();
-    writeln!(out, "            uint token = t0 + r; uint comp = c0 + cc;").unwrap();
-    writeln!(out, "            if (token < n_tokens && comp < n_comp) {{").unwrap();
-    writeln!(out, "                device float * dst = (device float *)(p3 + (uint64_t)token * score_token_stride) + comp;").unwrap();
-    writeln!(out, "                *dst = -INFINITY;").unwrap();
-    writeln!(out, "            }}").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        return;").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    for (uint i = tid; i < TN*D; i += 128u) {{").unwrap();
-    writeln!(out, "        uint cc = i / D; uint d = i - cc*D;").unwrap();
-    writeln!(out, "        uint comp = c0 + cc;").unwrap();
-    writeln!(out, "        half v = half(0.0f);").unwrap();
-    writeln!(out, "        if (comp < n_comp) {{").unwrap();
-    writeln!(out, "            device const float * row = (device const float *)(p2 + (uint64_t)comp * index_row_stride);").unwrap();
-    writeln!(out, "            v = half(row[d]);").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        ktg[i] = v;").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    uint cell0 = simd_lane;").unwrap();
-    writeln!(out, "    uint cell1 = simd_lane + 32u;").unwrap();
-    writeln!(out, "    uint row0 = cell0 >> 3; uint row1 = cell1 >> 3;").unwrap();
-    writeln!(out, "    uint sub0 = cell0 & 7u; uint sub1 = cell1 & 7u;").unwrap();
-    writeln!(out, "    uint col0 = simd_id * TS + sub0;").unwrap();
-    writeln!(out, "    uint col1 = simd_id * TS + sub1;").unwrap();
-    writeln!(out, "    uint token0 = t0 + row0; uint token1 = t0 + row1;").unwrap();
-    writeln!(out, "    uint comp0 = c0 + col0;   uint comp1 = c0 + col1;").unwrap();
-    writeln!(out, "    float acc0 = 0.0f; float acc1 = 0.0f;").unwrap();
-    writeln!(out, "    threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    for (uint head = 0u; head < n_head; ++head) {{").unwrap();
-    writeln!(out, "        for (uint i = tid; i < TM*D; i += 128u) {{").unwrap();
-    writeln!(out, "            uint r = i / D; uint d = i - r*D;").unwrap();
-    writeln!(out, "            uint token = t0 + r;").unwrap();
-    writeln!(out, "            half v = half(0.0f);").unwrap();
-    writeln!(out, "            if (token < n_tokens) {{").unwrap();
-    writeln!(out, "                device const float * qrow = (device const float *)(p0 + (uint64_t)token * q_token_stride + (uint64_t)head * q_head_stride);").unwrap();
-    writeln!(out, "                v = half(qrow[d]);").unwrap();
-    writeln!(out, "            }}").unwrap();
-    writeln!(out, "            qtg[i] = v;").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-    writeln!(
-        out,
-        "        simdgroup_float8x8 mdot = make_filled_simdgroup_matrix<float, 8>(0.0f);"
-    )
-    .unwrap();
-    writeln!(out, "        for (uint db = 0u; db < D/TS; ++db) {{").unwrap();
-    writeln!(out, "            simdgroup_half8x8 mq;").unwrap();
-    writeln!(out, "            simdgroup_half8x8 mk;").unwrap();
-    writeln!(
-        out,
-        "            simdgroup_load(mq, qtg + db*TS, D, 0, false);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            simdgroup_load(mk, ktg + (simd_id * TS) * D + db*TS, D, 0, true);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            simdgroup_multiply_accumulate(mdot, mq, mk, mdot);"
-    )
-    .unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        simdgroup_store(mdot, dotsh + simd_id * TS, TN, 0, false);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "        if (token0 < n_tokens && comp0 < n_comp) {{").unwrap();
-    writeln!(out, "            device const float * w = (device const float *)(p1 + (uint64_t)token0 * weights_token_stride);").unwrap();
-    writeln!(out, "            float s = dotsh[row0*TN + col0];").unwrap();
-    writeln!(out, "            acc0 += max(s, 0.0f) * (w[head] * scale);").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(out, "        if (token1 < n_tokens && comp1 < n_comp) {{").unwrap();
-    writeln!(out, "            device const float * w = (device const float *)(p1 + (uint64_t)token1 * weights_token_stride);").unwrap();
-    writeln!(out, "            float s = dotsh[row1*TN + col1];").unwrap();
-    writeln!(out, "            acc1 += max(s, 0.0f) * (w[head] * scale);").unwrap();
-    writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out).unwrap();
-    writeln!(out, "    if (token0 < n_tokens && comp0 < n_comp) {{").unwrap();
-    writeln!(
-        out,
-        "        uint visible = min((pos0 + token0 + 1u) / ratio, n_comp);"
-    )
-    .unwrap();
-    writeln!(out, "        device float * dst = (device float *)(p3 + (uint64_t)token0 * score_token_stride) + comp0;").unwrap();
-    writeln!(out, "        *dst = (comp0 < visible) ? acc0 : -INFINITY;").unwrap();
-    writeln!(out, "    }}").unwrap();
-    writeln!(out, "    if (token1 < n_tokens && comp1 < n_comp) {{").unwrap();
-    writeln!(
-        out,
-        "        uint visible = min((pos0 + token1 + 1u) / ratio, n_comp);"
-    )
-    .unwrap();
-    writeln!(out, "        device float * dst = (device float *)(p3 + (uint64_t)token1 * score_token_stride) + comp1;").unwrap();
-    writeln!(out, "        *dst = (comp1 < visible) ? acc1 : -INFINITY;").unwrap();
-    writeln!(out, "    }}").unwrap();
+    emit_dsv4_indexer_scores_tiled_generic_msl(out, &IndexerScoresTiled::ds4(IndexerElem::Half));
 }
 /// DS4 indexed_mixed_attention_heads8: 1 token × 8 heads per threadgroup, online softmax,
 /// dot+accum done as half (DS4 F16 attention rounding). KV is shared across 8 simdgroups
