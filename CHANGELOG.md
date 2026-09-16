@@ -32,6 +32,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Independent Metal correctness entry (`crates/metal_correctness`) and a
+  `macos-15` workflow that runs one small f32 add case from the current-source
+  emitter through GPU readback vs PyTorch CPU. This is initial coverage, not
+  the #31 first-batch list.
 - **Toolchain-drift CI guard** (`.github/workflows/toolchain-drift.yml`): a hard
   gate that `tile_std` builds on the pinned nightly and checks on the current
   nightly, so an accidental pin bump or new compiler drift fails loudly. The

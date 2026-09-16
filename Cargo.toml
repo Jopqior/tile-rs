@@ -24,6 +24,11 @@ exclude = [
     # workspace like tile_codegen. Build/test standalone: cd crates/tile_spec &&
     # cargo test  (or via scripts/coverage.sh).
     "crates/tile_spec",
+    # metal_correctness: independent Metal GPU numerical verification entry.
+    # Standalone workspace; #[path]-includes the Metal emitter with no LLVM dep.
+    # Build/test standalone: cd crates/metal_correctness && cargo test
+    # CI: .github/workflows/metal-correctness.yml (macos-15 arm64).
+    "crates/metal_correctness",
     "examples/acl_rs_vec_add",
     "examples/acl_vec_mul",
     "examples/acl_vec_add_mb",
