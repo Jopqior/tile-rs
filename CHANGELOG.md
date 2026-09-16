@@ -36,6 +36,16 @@ All notable changes to this project are documented here. The format follows
   `macos-15` workflow that runs one small f32 add case from the current-source
   emitter through GPU readback vs PyTorch CPU. This is initial coverage, not
   the #31 first-batch list.
+- **Metal correctness entry covers the elementwise family (#33):** `add`,
+  `sub`, `mul`, standalone `exp`, and the two-step combination `(a+b)*c` now
+  each have declared meaning, MLIR, bindings, and a PyTorch CPU reference.
+  `add`/`sub`/`mul` cover single element, SIMD-width boundaries, threadgroup
+  boundaries, and multiple groups with a tail; `exp` and the combination cover
+  single element (exp) and cross-group/tail. Boundary sizes are instantiated
+  from the discovered device SIMD width and `max_threads_per_threadgroup`
+  rather than hard-coded 32/256, and dispatch follows the discovered
+  threadgroup size. Every delivered case must run in CI; device-relative cases
+  report `unverified` rather than guessing a size when no device is present.
 - **Toolchain-drift CI guard** (`.github/workflows/toolchain-drift.yml`): a hard
   gate that `tile_std` builds on the pinned nightly and checks on the current
   nightly, so an accidental pin bump or new compiler drift fails loudly. The

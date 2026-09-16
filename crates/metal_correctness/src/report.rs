@@ -55,28 +55,61 @@ pub fn provenance() {
         log_line(line);
     }
     log_line("CACHE_POLICY=build cache allowed; emit, compile, reference, GPU execute always rerun");
-    log_line("COVERAGE=initial add_f32_small only; not #31 first-batch complete");
+    log_line(
+        "COVERAGE=add/sub/mul/exp/add_mul elementwise family (issue #33); not the whole #31 first batch",
+    );
+}
+
+/// Print small arrays in full, and summarize large generated arrays instead of
+/// dumping thousands of values. The declared shape and generator config are
+/// logged separately, and failure diagnostics still name the mismatch index.
+fn log_array_summary(name: &str, values: &[f32]) {
+    if values.len() <= 16 {
+        log_line(format!("{name}={values:?}"));
+    } else {
+        let head = &values[..4];
+        let tail = &values[values.len() - 4..];
+        let zeros = values.iter().filter(|v| **v == 0.0).count();
+        let negatives = values.iter().filter(|v| **v < 0.0).count();
+        log_line(format!(
+            "{name} len={} head={head:?} tail={tail:?} zeros={zeros} negatives={negatives}",
+            values.len()
+        ));
+    }
 }
 
 pub fn log_case_config(case: &Case) {
     log_line(format!("CASE id={}", case.id));
     log_line(format!("CASE_MEANING={}", case.meaning));
     log_line(format!(
+        "CASE_OP={} arity={}",
+        case.op.tag(),
+        case.op.arity()
+    ));
+    log_line(format!("CASE_SIZE={}", case.size_note));
+    log_line(format!(
         "CASE_SHAPE={:?} dtype={} layout={}",
         case.shape, case.dtype, case.layout
     ));
     log_line(format!(
-        "CASE_BINDINGS p0=a p1=b p2=out buffer(3)=num_elements kernel={}",
-        case.kernel_name
+        "CASE_BINDINGS {} kernel={}",
+        case.binding_note, case.kernel_name
     ));
     log_line(format!(
-        "CASE_PRESERVE inputs=a,b output_pad={} sentinel_init",
+        "CASE_PRESERVE inputs=0..{} output_pad={} sentinel_init",
+        case.op.arity() - 1,
         case.preserve_pad
     ));
     log_line(format!("CASE_COMPARE rtol={RTOL} atol={ATOL} finite_required=true"));
-    log_line(format!("CASE_INPUT_A={:?}", case.a));
-    log_line(format!("CASE_INPUT_B={:?}", case.b));
-    log_line(format!("CASE_HAND_EXPECTED={:?}", case.hand_expected));
+    log_line(format!(
+        "CASE_ANCHOR={} generator={}",
+        if case.hand_anchor { "literal_hand" } else { "independent_rust_op" },
+        if case.hand_anchor { "literal".to_string() } else { format!("lcg64 seed={}", crate::cases::SEED) }
+    ));
+    for (i, x) in case.inputs.iter().enumerate() {
+        log_array_summary(&format!("CASE_INPUT_{i}"), x);
+    }
+    log_array_summary("CASE_EXPECTED_ANCHOR", &case.expected_anchor);
 }
 
 pub fn log_msl_or_reason(msl: Option<&str>, reason: &str) {

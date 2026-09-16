@@ -1,4 +1,8 @@
 //! PyTorch CPU f32 reference. Same input values as the kernel; CPU device.
+//!
+//! The declared op is dispatched in Python so each path gets its own reference
+//! computation. The kernel is never the reference, and the two sides never
+//! generate their inputs independently.
 
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -28,13 +32,16 @@ impl std::fmt::Display for RefError {
 }
 
 fn json_array(xs: &[f32]) -> String {
-    let parts: Vec<String> = xs.iter().map(|x| {
-        if x.is_finite() {
-            format!("{x}")
-        } else {
-            "null".into()
-        }
-    }).collect();
+    let parts: Vec<String> = xs
+        .iter()
+        .map(|x| {
+            if x.is_finite() {
+                format!("{x}")
+            } else {
+                "null".into()
+            }
+        })
+        .collect();
     format!("[{}]", parts.join(","))
 }
 
@@ -52,36 +59,51 @@ pub fn torch_version() -> Result<String, RefError> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-pub fn add_f32_cpu(case: &Case) -> Result<TorchRef, RefError> {
-    let version = torch_version()?;
-    let payload = format!(
-        "{{\"a\":{},\"b\":{}}}",
-        json_array(case.a),
-        json_array(case.b)
-    );
-    let py = r#"
+/// The Python program that evaluates the declared op on the same f32 values.
+const REF_PY: &str = r#"
 import json, sys, torch
 req = json.load(sys.stdin)
-a = torch.tensor(req["a"], dtype=torch.float32, device="cpu")
-b = torch.tensor(req["b"], dtype=torch.float32, device="cpu")
-c = a + b
+op = req["op"]
+xs = [torch.tensor(x, dtype=torch.float32, device="cpu") for x in req["inputs"]]
+if op == "add":
+    c = xs[0] + xs[1]
+elif op == "sub":
+    c = xs[0] - xs[1]
+elif op == "mul":
+    c = xs[0] * xs[1]
+elif op == "exp":
+    c = torch.exp(xs[0])
+elif op == "add_mul":
+    c = (xs[0] + xs[1]) * xs[2]
+else:
+    sys.stderr.write("unknown op=" + str(op) + "\n")
+    sys.exit(3)
 if c.dtype != torch.float32:
-    sys.stderr.write("dtype="+str(c.dtype)+"\n")
+    sys.stderr.write("dtype=" + str(c.dtype) + "\n")
     sys.exit(2)
-if tuple(c.shape) != tuple(a.shape):
-    sys.stderr.write("shape="+str(tuple(c.shape))+"\n")
+if tuple(c.shape) != tuple(xs[0].shape):
+    sys.stderr.write("shape=" + str(tuple(c.shape)) + "\n")
     sys.exit(2)
 if not torch.isfinite(c).all():
     sys.stderr.write("nonfinite reference\n")
     sys.exit(2)
-dtype = "f32" if c.dtype == torch.float32 else str(c.dtype)
+dtype = "f32"
 shape = ",".join(str(int(d)) for d in c.shape)
 sys.stdout.write(f"META dtype={dtype} shape={shape}\n")
 sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
 "#;
+
+pub fn compute_cpu(case: &Case) -> Result<TorchRef, RefError> {
+    let version = torch_version()?;
+    let arrays: Vec<String> = case.inputs.iter().map(|x| json_array(x)).collect();
+    let payload = format!(
+        "{{\"op\":\"{}\",\"inputs\":[{}]}}",
+        case.op.tag(),
+        arrays.join(",")
+    );
     let mut child = Command::new("python3")
         .arg("-c")
-        .arg(py)
+        .arg(REF_PY)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -98,7 +120,10 @@ sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
         .map_err(|e| RefError::Fail(format!("wait torch: {e}")))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr);
-        return Err(RefError::Fail(format!("torch add failed: {err}")));
+        return Err(RefError::Fail(format!(
+            "torch {} reference failed: {err}",
+            case.op.tag()
+        )));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
     let mut lines = stdout.lines();
@@ -113,9 +138,9 @@ sys.stdout.write(",".join(repr(float(x)) for x in c.detach().reshape(-1)))
         if part.is_empty() {
             continue;
         }
-        let v: f32 = part.parse().map_err(|e| {
-            RefError::Fail(format!("parse torch output {part:?}: {e}"))
-        })?;
+        let v: f32 = part
+            .parse()
+            .map_err(|e| RefError::Fail(format!("parse torch output {part:?}: {e}")))?;
         values.push(v);
     }
     Ok(TorchRef {
@@ -151,10 +176,12 @@ fn parse_meta(line: &str) -> Result<(String, Vec<usize>), RefError> {
     }
 }
 
-/// Check the PyTorch result against the independent hand anchors.
-pub fn check_hand_anchor(case: &Case, got: &TorchRef) -> Result<(), CompareError> {
+/// Check the PyTorch result against the independent anchor (literal hand value
+/// for small cases, independent Rust evaluation otherwise) and the declared
+/// shape/dtype.
+pub fn check_anchor(case: &Case, got: &TorchRef) -> Result<(), CompareError> {
     require_dtype(&got.dtype, case.dtype)?;
-    require_shape(&got.shape, case.shape)?;
-    require_shape(&[got.values.len()], case.shape)?;
-    assert_close(&got.values, case.hand_expected)
+    require_shape(&got.shape, &case.shape)?;
+    require_shape(&[got.values.len()], &case.shape)?;
+    assert_close(&got.values, &case.expected_anchor)
 }

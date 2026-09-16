@@ -1,8 +1,11 @@
-name: Metal correctness (initial add)
+name: Metal correctness (elementwise family)
 
-# Staged coverage for issue #32: one small f32 add case through the current
-# source Metal emitter, MSL runtime compile, GPU execute/readback, and
-# PyTorch CPU compare. Passing this workflow is not #31 first-batch complete.
+# Staged coverage for issue #33: the five elementwise-family paths add, sub,
+# mul, standalone exp, and the two-step combination (a+b)*c, each through the
+# current source Metal emitter, MSL runtime compile, GPU execute/readback, and
+# a PyTorch CPU reference. Passing this workflow is not #31 first-batch
+# complete: the reduction, softmax, matmul, gather, and transpose families are
+# still outstanding.
 #
 # No path filters: emitter-adjacent changes can land outside a guessed path.
 # Manual dispatch follows default-branch workflow discovery: this file must
@@ -19,7 +22,7 @@ permissions:
 
 jobs:
   metal-correctness:
-    name: add_f32_small (initial; not issue 31 complete)
+    name: add/sub/mul/exp/add_mul (issue 33; not issue 31 complete)
     runs-on: macos-15
     timeout-minutes: 45
     steps:
@@ -82,6 +85,10 @@ jobs:
           done
           echo "::error::PyTorch install retries exhausted"
           exit 1
+
+      - name: Log the expected delivered list
+        working-directory: crates/metal_correctness
+        run: cargo run --release -- --list
 
       - name: Run full delivered Metal correctness list
         working-directory: crates/metal_correctness

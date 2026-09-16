@@ -39,9 +39,9 @@ pub struct CaseResult {
 }
 
 impl CaseResult {
-    pub fn pass(id: &str) -> Self {
+    pub fn pass(id: impl Into<String>) -> Self {
         Self {
-            id: id.to_string(),
+            id: id.into(),
             status: Status::Pass,
             stage: "compare".into(),
             detail: "ok".into(),
@@ -49,9 +49,9 @@ impl CaseResult {
         }
     }
 
-    pub fn fail(id: &str, stage: &str, detail: impl Into<String>) -> Self {
+    pub fn fail(id: impl Into<String>, stage: &str, detail: impl Into<String>) -> Self {
         Self {
-            id: id.to_string(),
+            id: id.into(),
             status: Status::Fail,
             stage: stage.into(),
             detail: detail.into(),
@@ -59,9 +59,9 @@ impl CaseResult {
         }
     }
 
-    pub fn unverified(id: &str, stage: &str, detail: impl Into<String>) -> Self {
+    pub fn unverified(id: impl Into<String>, stage: &str, detail: impl Into<String>) -> Self {
         Self {
-            id: id.to_string(),
+            id: id.into(),
             status: Status::Unverified,
             stage: stage.into(),
             detail: detail.into(),

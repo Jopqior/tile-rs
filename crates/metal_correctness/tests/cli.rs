@@ -71,6 +71,121 @@ fn delivered_case_list_names_the_add_case_without_running_gpu() {
 }
 
 #[test]
+fn delivered_list_covers_add_sub_mul_exp_and_combination() {
+    let out = bin()
+        .arg("--list")
+        .output()
+        .expect("run metal-correctness --list");
+    let text = output_text(&out);
+    for id in [
+        "add_f32_small",
+        "sub_f32_small",
+        "mul_f32_small",
+        "exp_f32_small",
+        "add_mul_f32_small",
+    ] {
+        assert!(text.contains(id), "missing {id} in delivered list\n{text}");
+    }
+}
+
+#[test]
+fn delivered_list_covers_simd_threadgroup_and_tail_boundaries() {
+    let out = bin()
+        .arg("--list")
+        .output()
+        .expect("run metal-correctness --list");
+    let text = output_text(&out);
+    for id in [
+        "add_f32_single",
+        "add_f32_vec_minus_1",
+        "add_f32_vec_plus_1",
+        "add_f32_threadgroup_minus_1",
+        "add_f32_threadgroup_plus_1",
+        "add_f32_multi_group_tail",
+        "sub_f32_multi_group_tail",
+        "mul_f32_multi_group_tail",
+        "exp_f32_single",
+        "exp_f32_multi_group_tail",
+        "add_mul_f32_multi_group_tail",
+    ] {
+        assert!(text.contains(id), "missing boundary case {id}\n{text}");
+    }
+}
+
+#[test]
+fn self_check_covers_every_path_and_the_combination_order() {
+    let out = bin()
+        .arg("--self-check")
+        .output()
+        .expect("run metal-correctness --self-check");
+    let text = output_text(&out);
+    assert!(out.status.success(), "self-check failed\n{text}");
+    for key in [
+        "SELF_CHECK_HAND_ADD=pass",
+        "SELF_CHECK_HAND_SUB=pass",
+        "SELF_CHECK_HAND_MUL=pass",
+        "SELF_CHECK_HAND_EXP=pass",
+        "SELF_CHECK_HAND_ADD_MUL=pass",
+        "SELF_CHECK_COMBO_ORDER=rejected",
+        "SELF_CHECK_TAIL_MISS=rejected",
+        "SELF_CHECK_DROPPED_CASE=rejected",
+        "SELF_CHECK_NO_DEVICE_SIZE=rejected",
+    ] {
+        assert!(text.contains(key), "self-check evidence {key} missing\n{text}");
+    }
+}
+
+#[test]
+fn combination_case_emits_the_declared_two_step_order() {
+    let out = bin()
+        .args(["--case", "add_mul_f32_small"])
+        .env("METAL_CORRECTNESS_DUMP_MSL", "1")
+        .output()
+        .expect("run metal-correctness --case add_mul_f32_small");
+    let text = output_text(&out);
+    assert!(
+        text.contains("((p0[gid] + p1[gid]) * p2[gid])"),
+        "combination MSL does not compute (a+b)*c in order\n{text}"
+    );
+    assert!(
+        !text.contains("GPU_VERIFY=pass"),
+        "no GPU run is expected in this off-device check\n{text}"
+    );
+}
+
+#[test]
+fn device_relative_case_without_a_device_is_unverified_not_pass() {
+    let out = bin()
+        .args(["--case", "add_f32_vec"])
+        .output()
+        .expect("run metal-correctness --case add_f32_vec");
+    let text = output_text(&out);
+    assert!(
+        !out.status.success(),
+        "a device-relative case must not succeed without a device\n{text}"
+    );
+    assert!(
+        text.contains("CASE_UNAVAILABLE") || text.contains("GPU_UNVERIFIED"),
+        "device-relative case failure reason missing\n{text}"
+    );
+    assert!(
+        !text.contains("GPU_VERIFY=pass"),
+        "device-relative case must not claim GPU pass\n{text}"
+    );
+}
+
+#[test]
+fn unknown_case_is_not_success() {
+    let out = bin()
+        .args(["--case", "not_a_real_case"])
+        .output()
+        .expect("run metal-correctness with unknown case");
+    assert!(!out.status.success(), "unknown case must not succeed");
+    let text = output_text(&out);
+    assert!(text.contains("CASE_UNKNOWN"), "missing CASE_UNKNOWN\n{text}");
+}
+
+#[test]
 fn self_check_detects_a_missing_required_case() {
     let out = bin()
         .arg("--self-check")
