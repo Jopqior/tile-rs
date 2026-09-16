@@ -540,18 +540,25 @@ extern "C" {
     /// DS4 kv_fp8_store: per-row n_nope chunked-64 fp8 round-trip + n_rot tail half-cast.
     /// p0=kv (head_dim, in/out), p1=raw_cache (raw_row*head_dim base offset, write).
     /// Single threadgroup of 64 threads, no batching: one row per dispatch.
+    ///
+    /// `block` elements share one FP8 scale. It must be a compile-time power of
+    /// two up to 1024; dispatch one threadgroup of `block` threads. DeepSeek-V4 uses 64.
     pub fn __tile_kv_fp8_store_f32(
         kv: u32,
         raw_cache: u32,
         head_dim: u32,
         n_rot: u32,
         raw_row: u32,
+        block: u32,
     ) -> u32;
 
     /// DS4 fp8_kv_quantize: 4D batched n_nope chunked-64 fp8 round-trip.
     /// p0=src0 (read), p1=dst (write). Element-stride params nb01_e/nb02_e/nb03_e
     /// for src, nb1_e/nb2_e/nb3_e for dst (driver pre-divides byte strides by 4).
     /// Dispatches (n_rows = ne01*ne02*ne03) threadgroups of 64 threads each.
+    ///
+    /// `block` elements share one FP8 scale. It must be a compile-time power of
+    /// two up to 1024; dispatch `block` threads per threadgroup. DeepSeek-V4 uses 64.
     pub fn __tile_fp8_kv_quantize_f32(
         src: u32,
         dst: u32,
@@ -566,6 +573,7 @@ extern "C" {
         nb2_e: u32,
         nb3_e: u32,
         n_rot: u32,
+        block: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_pad: byte-stride DMA padding of K/V/mask into a single dst buffer.
@@ -633,6 +641,10 @@ extern "C" {
     /// DS4 dsv4_router_finalize_one: 256-thread bitonic top-6 over (probs+bias).
     /// Buffers: probs(float, 256), bias(float, 256), hash(int*), tokens(int*), selected(int, 6 out).
     /// hash_mode short-circuits to copying hash[token*6..+6] into selected.
+    ///
+    /// `n_expert` (a power of two up to 1024) and `top_k` must be compile-time
+    /// constants; dispatch one threadgroup of `n_expert` threads. The hash table
+    /// has `top_k` columns. DeepSeek-V4 uses 256 experts, top 6.
     pub fn __tile_router_finalize_one_f32(
         probs: u32,
         bias: u32,
@@ -644,6 +656,8 @@ extern "C" {
         use_token_buffer: u32,
         token: u32,
         hash_rows: u32,
+        n_expert: u32,
+        top_k: u32,
     ) -> u32;
 
     /// DS4 indexer scoring: per token and compressed key, the sum over heads of
@@ -677,6 +691,13 @@ extern "C" {
     /// DS4 dsv4_indexed_mixed_attention_heads8: ratio-4 mixed attention,
     /// 1 token × 8 heads per threadgroup, online softmax with half K dot/accum.
     /// Buffers: q, raw_kv, comp_kv, topk, sinks, dst (all char*).
+    ///
+    /// Compile-time shape operands: `head_dim` (128, 256, 512 or 1024),
+    /// `heads_per_group` (1 to 32; dispatch (n_tokens, ceil(n_head / heads_per_group))
+    /// threadgroups of 32 x heads_per_group threads) and `stage_bits` (16 stages
+    /// Q and K as half, 32 as float). DeepSeek-V4 uses 512, 8 and 16. The runtime
+    /// `n_head` must be a multiple of `heads_per_group`, or heads in the last
+    /// threadgroup read key rows that were never staged.
     pub fn __tile_indexed_mixed_attention_h8_f32(
         q: u32,
         raw_kv: u32,
@@ -702,6 +723,9 @@ extern "C" {
         dst_token_stride: u32,
         dst_head_stride: u32,
         scale: u32,
+        head_dim: u32,
+        heads_per_group: u32,
+        stage_bits: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec_reduce: split-K decode reducer that merges NWG
@@ -3314,6 +3338,17 @@ extern "C" {
 
     /// DS4 dsv4_indexed_mixed_attention_heads8_rb4: decode specialization of the h8
     /// kernel that stages 4 raw/comp KV rows at once and consumes them sequentially.
+    ///
+    /// Compile-time shape operands: `head_dim` (128, 256, 512 or 1024),
+    /// `heads_per_group` (1 to 32; dispatch (n_tokens, ceil(n_head / heads_per_group))
+    /// threadgroups of 32 x heads_per_group threads) and `stage_bits` (16 stages
+    /// Q and K as half, 32 as float). DeepSeek-V4 uses 512, 8 and 16. The runtime
+    /// `n_head` must be a multiple of `heads_per_group`, or heads in the last
+    /// threadgroup read key rows that were never staged.
+    /// `rows_per_batch` (1 to 16) key rows are staged per barrier; DeepSeek-V4 uses 4.
+    /// Staged rows use `16 * rows_per_batch * head_dim / 4` bytes of threadgroup
+    /// memory, and Metal lowers the pipeline's thread ceiling as that grows, so
+    /// check `maxTotalThreadsPerThreadgroup` before dispatching many heads per group.
     pub fn __tile_indexed_mixed_attention_h8_rb4_f32(
         q: u32,
         raw_kv: u32,
@@ -3339,6 +3374,10 @@ extern "C" {
         dst_token_stride: u32,
         dst_head_stride: u32,
         scale: u32,
+        head_dim: u32,
+        heads_per_group: u32,
+        stage_bits: u32,
+        rows_per_batch: u32,
     ) -> u32;
 
     /// DS4 dsv4_indexer_scores_tiled (bf16/half K variant of the f32 tiled scorer).

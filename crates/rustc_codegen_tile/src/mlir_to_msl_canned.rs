@@ -2351,16 +2351,82 @@ pub(super) fn emit_e4m3fn_helpers(out: &mut String) {
     writeln!(out, "}}").unwrap();
     writeln!(out).unwrap();
 }
+
+/// The same helpers inside an include guard, so two emitted files that both
+/// carry them can be concatenated into one library. `other` names a kernel
+/// that also defines them, for the comment.
+pub(super) fn emit_e4m3fn_helpers_guarded(out: &mut String, other: &str) {
+    writeln!(out, "// E4M3FN dequant helpers (DS4-compatible). Guarded so concatenation with").unwrap();
+    writeln!(out, "// other emitted/.metal files that define the same helpers (e.g.").unwrap();
+    writeln!(out, "// {other}) doesn't produce a duplicate-symbol compile error.").unwrap();
+    writeln!(out, "#ifndef DSV4_E4M3FN_HELPERS_DEFINED").unwrap();
+    writeln!(out, "#define DSV4_E4M3FN_HELPERS_DEFINED").unwrap();
+    writeln!(out, "constant float dsv4_e4m3fn_exp_scale[16] = {{").unwrap();
+    writeln!(out, "    0.0f, 0.015625f, 0.03125f, 0.0625f,").unwrap();
+    writeln!(out, "    0.125f, 0.25f, 0.5f, 1.0f,").unwrap();
+    writeln!(out, "    2.0f, 4.0f, 8.0f, 16.0f,").unwrap();
+    writeln!(out, "    32.0f, 64.0f, 128.0f, 256.0f,").unwrap();
+    writeln!(out, "}};").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "static inline float dsv4_e4m3fn_value(int i) {{").unwrap();
+    writeln!(out, "    const int exp  = (i >> 3) & 0x0f;").unwrap();
+    writeln!(out, "    const int mant = i & 0x07;").unwrap();
+    writeln!(out, "    return exp == 0").unwrap();
+    writeln!(out, "        ? float(mant) * 0.001953125f").unwrap();
+    writeln!(
+        out,
+        "        : (1.0f + float(mant) * 0.125f) * dsv4_e4m3fn_exp_scale[exp];"
+    )
+    .unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "static inline float dsv4_e4m3fn_dequant(float x) {{").unwrap();
+    writeln!(out, "    const float sign = x < 0.0f ? -1.0f : 1.0f;").unwrap();
+    writeln!(out, "    const float ax = min(abs(x), 448.0f);").unwrap();
+    writeln!(out, "    int lo = 0;").unwrap();
+    writeln!(out, "    int hi = 126;").unwrap();
+    writeln!(out, "    while (lo < hi) {{").unwrap();
+    writeln!(out, "        const int mid = (lo + hi + 1) >> 1;").unwrap();
+    writeln!(
+        out,
+        "        if (dsv4_e4m3fn_value(mid) <= ax) {{ lo = mid; }} else {{ hi = mid - 1; }}"
+    )
+    .unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    int best = lo;").unwrap();
+    writeln!(out, "    if (best < 126) {{").unwrap();
+    writeln!(
+        out,
+        "        const float best_diff = abs(ax - dsv4_e4m3fn_value(best));"
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "        const float next_diff = abs(ax - dsv4_e4m3fn_value(best + 1));"
+    )
+    .unwrap();
+    writeln!(out, "        if (next_diff < best_diff || (next_diff == best_diff && ((best + 1) & 1) == 0 && (best & 1) != 0)) {{").unwrap();
+    writeln!(out, "            best = best + 1;").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    return sign * dsv4_e4m3fn_value(best);").unwrap();
+    writeln!(out, "}}").unwrap();
+    writeln!(out, "#endif // DSV4_E4M3FN_HELPERS_DEFINED").unwrap();
+    writeln!(out).unwrap();
+}
 /// DS4 kv_fp8_store: per-row n_nope chunked-64 fp8 round-trip + n_rot tail
 /// half-cast. p0 = kv (read+write, head_dim floats), p1 = raw_cache (write,
 /// raw_row*head_dim base). 64 threads per threadgroup, single dispatch.
 /// Uses threadgroup shmem `scratch[64]` baked in (no setThreadgroupMemoryLength).
-pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
-    writeln!(out, "    threadgroup float scratch[64];").unwrap();
+/// `block` elements share one FP8 scale: a threadgroup of `block` threads
+/// reduces them to a max, so `block` must be a power of two.
+pub(super) fn emit_dsv4_kv_fp8_store_generic_msl(out: &mut String, block: u32) {
+    let half = block / 2;
+    writeln!(out, "    threadgroup float scratch[{block}];").unwrap();
     writeln!(out, "    int n_nope = (int)head_dim - (int)n_rot;").unwrap();
     writeln!(
         out,
-        "    if ((int)head_dim <= 0 || (int)n_rot < 0 || n_nope < 0 || tid >= 64u) return;"
+        "    if ((int)head_dim <= 0 || (int)n_rot < 0 || n_nope < 0 || tid >= {block}u) return;"
     )
     .unwrap();
     writeln!(
@@ -2369,7 +2435,7 @@ pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    for (int off = 0; off < n_nope; off += 64) {{").unwrap();
+    writeln!(out, "    for (int off = 0; off < n_nope; off += {block}) {{").unwrap();
     writeln!(out, "        float v = 0.0f;").unwrap();
     writeln!(out, "        if (off + (int)tid < n_nope) {{").unwrap();
     writeln!(out, "            v = p0[off + (int)tid];").unwrap();
@@ -2384,7 +2450,7 @@ pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
     .unwrap();
     writeln!(
         out,
-        "        for (uint stride = 32u; stride > 0u; stride >>= 1) {{"
+        "        for (uint stride = {half}u; stride > 0u; stride >>= 1) {{"
     )
     .unwrap();
     writeln!(out, "            if (tid < stride) {{").unwrap();
@@ -2420,11 +2486,15 @@ pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "    for (int i = n_nope + (int)tid; i < (int)head_dim; i += 64) {{"
+        "    for (int i = n_nope + (int)tid; i < (int)head_dim; i += {block}) {{"
     )
     .unwrap();
     writeln!(out, "        raw[i] = (float)((half)p0[i]);").unwrap();
     writeln!(out, "    }}").unwrap();
+}
+/// DS4 kv_fp8_store at the shipped block of 64.
+pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
+    emit_dsv4_kv_fp8_store_generic_msl(out, FP8_KV_DS4_BLOCK);
 }
 /// DS4 fp8_kv_quantize: 4D batched n_nope chunked-64 fp8 round-trip.
 /// p0 = src0 (read), p1 = dst (write). Strides nb*_e are in float-elements
@@ -2432,10 +2502,13 @@ pub(super) fn emit_dsv4_kv_fp8_store_msl(out: &mut String) {
 /// as one threadgroup of 64 threads. row index → (i1, i2, i3) decoded against
 /// (ne01, ne02, ne03). For each row: chunked-64 max-abs reduce + fp8 quant +
 /// tail copy of n_rot bytes (raw f32 passthrough).
-pub(super) fn emit_dsv4_fp8_kv_quantize_msl(out: &mut String) {
-    writeln!(out, "    threadgroup float scratch[64];").unwrap();
+/// `block` elements share one FP8 scale: a threadgroup of `block` threads
+/// reduces them to a max, so `block` must be a power of two.
+pub(super) fn emit_dsv4_fp8_kv_quantize_generic_msl(out: &mut String, block: u32) {
+    let half = block / 2;
+    writeln!(out, "    threadgroup float scratch[{block}];").unwrap();
     writeln!(out, "    uint n_rows = ne01 * ne02 * ne03;").unwrap();
-    writeln!(out, "    if (row >= n_rows || tid >= 64u) return;").unwrap();
+    writeln!(out, "    if (row >= n_rows || tid >= {block}u) return;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    uint i1 = row % ne01;").unwrap();
     writeln!(out, "    uint i2 = (row / ne01) % ne02;").unwrap();
@@ -2455,7 +2528,7 @@ pub(super) fn emit_dsv4_fp8_kv_quantize_msl(out: &mut String) {
     writeln!(out, "    int n_nope = (int)ne00 - (int)n_rot;").unwrap();
     writeln!(out, "    if (n_nope < 0) n_nope = 0;").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    for (int off = 0; off < n_nope; off += 64) {{").unwrap();
+    writeln!(out, "    for (int off = 0; off < n_nope; off += {block}) {{").unwrap();
     writeln!(out, "        float v = 0.0f;").unwrap();
     writeln!(out, "        if (off + (int)tid < n_nope) {{").unwrap();
     writeln!(out, "            v = src_base[off + (int)tid];").unwrap();
@@ -2470,7 +2543,7 @@ pub(super) fn emit_dsv4_fp8_kv_quantize_msl(out: &mut String) {
     .unwrap();
     writeln!(
         out,
-        "        for (uint stride = 32u; stride > 0u; stride >>= 1) {{"
+        "        for (uint stride = {half}u; stride > 0u; stride >>= 1) {{"
     )
     .unwrap();
     writeln!(out, "            if (tid < stride) {{").unwrap();
@@ -2505,11 +2578,15 @@ pub(super) fn emit_dsv4_fp8_kv_quantize_msl(out: &mut String) {
     writeln!(out).unwrap();
     writeln!(
         out,
-        "    for (uint i = (uint)n_nope + tid; i < ne00; i += 64u) {{"
+        "    for (uint i = (uint)n_nope + tid; i < ne00; i += {block}u) {{"
     )
     .unwrap();
     writeln!(out, "        dst_base[i] = src_base[i];").unwrap();
     writeln!(out, "    }}").unwrap();
+}
+/// DS4 fp8_kv_quantize at the shipped block of 64.
+pub(super) fn emit_dsv4_fp8_kv_quantize_msl(out: &mut String) {
+    emit_dsv4_fp8_kv_quantize_generic_msl(out, FP8_KV_DS4_BLOCK);
 }
 /// DS4 flash_attn_ext_pad: byte-stride DMA padding of K/V/mask blocks.
 /// Buffers (all char*): p0=k, p1=v, p2=mask, p3=dst (k_pad | v_pad | mask_pad).
@@ -2768,10 +2845,14 @@ pub(super) fn check_indexer_score_one_n_head(n_head: u32) -> Result<(), String> 
 /// hash_mode short-circuit: thread 0 copies hash[token*6..+6] into selected[0..6].
 /// Otherwise: stage (probs+bias) into sel_scores, run log2(256)=8 outer × inner phases of
 /// bitonic compare-exchange via an `idx[]` permutation array, then thread<6 writes idx[tid] to selected.
-pub(super) fn emit_dsv4_router_finalize_one_msl(out: &mut String) {
-    writeln!(out, "    if (tid >= 256u) return;").unwrap();
-    writeln!(out, "    threadgroup float sel_scores[256];").unwrap();
-    writeln!(out, "    threadgroup int idx[256];").unwrap();
+/// DS4 router_finalize_one for `n_expert` experts and `top_k` selections.
+/// One threadgroup of `n_expert` threads bitonic-sorts expert indices by
+/// score (probs, plus bias when has_bias) and writes the first `top_k`; in
+/// hash mode it copies row `token` of the `top_k`-wide hash table instead.
+pub(super) fn emit_dsv4_router_finalize_one_generic_msl(out: &mut String, n_expert: u32, top_k: u32) {
+    writeln!(out, "    if (tid >= {n_expert}u) return;").unwrap();
+    writeln!(out, "    threadgroup float sel_scores[{n_expert}];").unwrap();
+    writeln!(out, "    threadgroup int idx[{n_expert}];").unwrap();
     writeln!(out, "    float pv = p0[tid];").unwrap();
     writeln!(
         out,
@@ -2794,12 +2875,12 @@ pub(super) fn emit_dsv4_router_finalize_one_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "            uint hrow = (t < hr) ? t : hr;").unwrap();
-    writeln!(out, "            for (uint i = 0u; i < 6u; ++i) {{").unwrap();
-    writeln!(out, "                p4[i] = p2[hrow * 6u + i];").unwrap();
+    writeln!(out, "            for (uint i = 0u; i < {top_k}u; ++i) {{").unwrap();
+    writeln!(out, "                p4[i] = p2[hrow * {top_k}u + i];").unwrap();
     writeln!(out, "            }}").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }} else {{").unwrap();
-    writeln!(out, "        for (uint k = 2u; k <= 256u; k <<= 1) {{").unwrap();
+    writeln!(out, "        for (uint k = 2u; k <= {n_expert}u; k <<= 1) {{").unwrap();
     writeln!(out, "            for (uint j = k >> 1; j > 0u; j >>= 1) {{").unwrap();
     writeln!(out, "                uint other = tid ^ j;").unwrap();
     writeln!(out, "                if (other > tid) {{").unwrap();
@@ -2832,11 +2913,32 @@ pub(super) fn emit_dsv4_router_finalize_one_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "            }}").unwrap();
     writeln!(out, "        }}").unwrap();
-    writeln!(out, "        if (tid < 6u) {{").unwrap();
+    writeln!(out, "        if (tid < {top_k}u) {{").unwrap();
     writeln!(out, "            p4[tid] = idx[tid];").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "    threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
+}
+/// DS4 router_finalize_one at the shipped 256 experts, top 6.
+pub(super) fn emit_dsv4_router_finalize_one_msl(out: &mut String) {
+    emit_dsv4_router_finalize_one_generic_msl(out, ROUTER_DS4_N_EXPERT, ROUTER_DS4_TOP_K);
+}
+
+/// Experts and selections the DeepSeek-V4 router uses.
+pub(super) const ROUTER_DS4_N_EXPERT: u32 = 256;
+pub(super) const ROUTER_DS4_TOP_K: u32 = 6;
+
+/// Why a router shape cannot be emitted, if it cannot.
+pub(super) fn check_router_shape(n_expert: u32, top_k: u32) -> Result<(), String> {
+    if !(2..=1024).contains(&n_expert) || !n_expert.is_power_of_two() {
+        return Err(format!(
+            "router_finalize_one: n_expert {n_expert} must be a power of two from 2 to 1024 (one bitonic sort per threadgroup)"
+        ));
+    }
+    if top_k == 0 || top_k > n_expert {
+        return Err(format!("router_finalize_one: top_k {top_k} must be from 1 to n_expert ({n_expert})"));
+    }
+    Ok(())
 }
 /// DS4 dsv4_indexer_scores_tiled_f32: 8x32 tile fused indexer scoring with simdgroup_float8x8 matmul.
 /// Buffers (all char*): p0=q, p1=weights, p2=index_comp, p3=scores.
@@ -3062,113 +3164,74 @@ pub(super) fn emit_dsv4_indexer_scores_tiled_msl(out: &mut String) {
 /// DS4 indexed_mixed_attention_heads8: 1 token × 8 heads per threadgroup, online softmax,
 /// dot+accum done as half (DS4 F16 attention rounding). KV is shared across 8 simdgroups
 /// (eight heads) via threadgroup memory. K is reused as V (compressed KV latent).
-pub(super) fn emit_dsv4_indexed_mixed_attention_h8_msl(out: &mut String) {
-    writeln!(out, "    threadgroup float4 kv_shared[128];").unwrap();
+pub(super) fn emit_dsv4_indexed_mixed_attention_generic_msl(out: &mut String, shape: &MixedAttention) {
+    let stripes = shape.head_dim / 128;
+    let row_w = shape.head_dim / 4;
+    let heads = shape.heads_per_group;
+    let threads = 32 * heads;
+    let stage = shape.stage;
+    // Past four stripes a stripe would be named `q4`, the name of the Q row
+    // pointer, so wide heads name their stripes qs0.. instead.
+    let q_name = |i: u32| if stripes > 4 { format!("qs{i}") } else { format!("q{i}") };
+    // Silence the batched-only parameters in the one-row kernel.
+    let _ = (threads, shape.rows_per_batch);
+    writeln!(out, "    threadgroup float4 kv_shared[{row_w}];").unwrap();
     writeln!(out, "    uint token = tgpig.x;").unwrap();
-    writeln!(out, "    uint head  = tgpig.y * 8u + simd_id;").unwrap();
+    writeln!(out, "    uint head  = tgpig.y * {heads}u + simd_id;").unwrap();
     writeln!(out, "    if (token >= n_tokens || head >= n_head) return;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    device const float4 *q4 = (device const float4 *)(p0 + (uint64_t)token * q_token_stride + (uint64_t)head * q_head_stride);").unwrap();
-    writeln!(out, "    half4 q0 = (half4)q4[simd_lane +  0];").unwrap();
-    writeln!(out, "    half4 q1 = (half4)q4[simd_lane + 32];").unwrap();
-    writeln!(out, "    half4 q2 = (half4)q4[simd_lane + 64];").unwrap();
-    writeln!(out, "    half4 q3 = (half4)q4[simd_lane + 96];").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "    half4 {} = (half4)q4[simd_lane + {off:>2}];", q_name(i)).unwrap(),
+            MixedStage::Float => writeln!(out, "    float4 {} = q4[simd_lane + {off:>2}];", q_name(i)).unwrap(),
+        }
+    }
     writeln!(out).unwrap();
     writeln!(out, "    float M = -FLT_MAX/2.0f;").unwrap();
     writeln!(out, "    float S = 0.0f;").unwrap();
-    writeln!(out, "    float4 o0 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o1 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o2 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o3 = float4(0.0f);").unwrap();
+    for i in 0..stripes {
+        writeln!(out, "    float4 o{i} = float4(0.0f);").unwrap();
+    }
     writeln!(out).unwrap();
     writeln!(out, "    uint qpos = pos0 + token;").unwrap();
     writeln!(out, "    uint last_pos = pos0 + n_tokens - 1u;").unwrap();
     writeln!(out, "    uint first_raw_pos = last_pos + 1u - n_raw;").unwrap();
     writeln!(out, "    uint raw_last_pos = first_raw_pos + n_raw - 1u;").unwrap();
-    writeln!(
-        out,
-        "    uint window_first = (window != 0u && qpos + 1u > window) ? (qpos + 1u - window) : 0u;"
-    )
-    .unwrap();
+    writeln!(out, "    uint window_first = (window != 0u && qpos + 1u > window) ? (qpos + 1u - window) : 0u;").unwrap();
     writeln!(out, "    uint first = max(first_raw_pos, window_first);").unwrap();
     writeln!(out, "    uint last  = min(qpos, raw_last_pos);").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    if (first <= last) {{").unwrap();
     writeln!(out, "        for (uint pos = first; pos <= last; ++pos) {{").unwrap();
     writeln!(out, "            uint logical = pos - first_raw_pos;").unwrap();
-    writeln!(
-        out,
-        "            uint row = (raw_start + logical) % raw_cap;"
-    )
-    .unwrap();
+    writeln!(out, "            uint row = (raw_start + logical) % raw_cap;").unwrap();
     writeln!(out, "            device const float4 *src = (device const float4 *)(p1 + (uint64_t)row * raw_row_stride);").unwrap();
-    writeln!(
-        out,
-        "            if (tid < 128u) kv_shared[tid] = src[tid];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "            if (tid < {row_w}u) kv_shared[tid] = src[tid];").unwrap();
+    writeln!(out, "            threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "            {{").unwrap();
-    writeln!(
-        out,
-        "                half4 k0 = (half4)kv_shared[simd_lane +  0];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k1 = (half4)kv_shared[simd_lane + 32];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k2 = (half4)kv_shared[simd_lane + 64];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k3 = (half4)kv_shared[simd_lane + 96];"
-    )
-    .unwrap();
-    writeln!(out, "                float score = dot((float4)q0,(float4)k0) + dot((float4)q1,(float4)k1) + dot((float4)q2,(float4)k2) + dot((float4)q3,(float4)k3);").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "                half4 k{i} = (half4)kv_shared[simd_lane + {off:>2}];").unwrap(),
+            MixedStage::Float => writeln!(out, "                float4 k{i} = kv_shared[simd_lane + {off:>2}];").unwrap(),
+        }
+    }
+    {
+        let dots: Vec<String> = (0..stripes).map(|i| format!("dot((float4){},(float4)k{i})", q_name(i))).collect();
+        writeln!(out, "                float score = {};", dots.join(" + ")).unwrap();
+    }
     writeln!(out, "                score = simd_sum(score) * scale;").unwrap();
-    writeln!(
-        out,
-        "                float old_m = M; float new_m = max(M, score);"
-    )
-    .unwrap();
+    writeln!(out, "                float old_m = M; float new_m = max(M, score);").unwrap();
     writeln!(out, "                float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);").unwrap();
     writeln!(out, "                S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "                o0 = o0 * old_scale + (float4)k0 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o1 = o1 * old_scale + (float4)k1 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o2 = o2 * old_scale + (float4)k2 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o3 = o3 * old_scale + (float4)k3 * row_scale;"
-    )
-    .unwrap();
+    for i in 0..stripes {
+        writeln!(out, "                o{i} = o{i} * old_scale + (float4)k{i} * row_scale;").unwrap();
+    }
     writeln!(out, "                M = new_m;").unwrap();
     writeln!(out, "            }}").unwrap();
-    writeln!(
-        out,
-        "            threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "            threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
@@ -3179,348 +3242,263 @@ pub(super) fn emit_dsv4_indexed_mixed_attention_h8_msl(out: &mut String) {
     writeln!(out, "        if (idx < 0) continue;").unwrap();
     writeln!(out, "        if ((uint)idx >= visible) break;").unwrap();
     writeln!(out, "        device const float4 *src = (device const float4 *)(p2 + (uint64_t)(uint)idx * comp_row_stride);").unwrap();
-    writeln!(out, "        if (tid < 128u) kv_shared[tid] = src[tid];").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "        if (tid < {row_w}u) kv_shared[tid] = src[tid];").unwrap();
+    writeln!(out, "        threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "        {{").unwrap();
-    writeln!(
-        out,
-        "            half4 k0 = (half4)kv_shared[simd_lane +  0];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            half4 k1 = (half4)kv_shared[simd_lane + 32];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            half4 k2 = (half4)kv_shared[simd_lane + 64];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            half4 k3 = (half4)kv_shared[simd_lane + 96];"
-    )
-    .unwrap();
-    writeln!(out, "            float score = dot((float4)q0,(float4)k0) + dot((float4)q1,(float4)k1) + dot((float4)q2,(float4)k2) + dot((float4)q3,(float4)k3);").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "            half4 k{i} = (half4)kv_shared[simd_lane + {off:>2}];").unwrap(),
+            MixedStage::Float => writeln!(out, "            float4 k{i} = kv_shared[simd_lane + {off:>2}];").unwrap(),
+        }
+    }
+    {
+        let dots: Vec<String> = (0..stripes).map(|i| format!("dot((float4){},(float4)k{i})", q_name(i))).collect();
+        writeln!(out, "            float score = {};", dots.join(" + ")).unwrap();
+    }
     writeln!(out, "            score = simd_sum(score) * scale;").unwrap();
-    writeln!(
-        out,
-        "            float old_m = M; float new_m = max(M, score);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);"
-    )
-    .unwrap();
+    writeln!(out, "            float old_m = M; float new_m = max(M, score);").unwrap();
+    writeln!(out, "            float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);").unwrap();
     writeln!(out, "            S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "            o0 = o0 * old_scale + (float4)k0 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o1 = o1 * old_scale + (float4)k1 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o2 = o2 * old_scale + (float4)k2 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o3 = o3 * old_scale + (float4)k3 * row_scale;"
-    )
-    .unwrap();
+    for i in 0..stripes {
+        writeln!(out, "            o{i} = o{i} * old_scale + (float4)k{i} * row_scale;").unwrap();
+    }
     writeln!(out, "            M = new_m;").unwrap();
     writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "        threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    {{").unwrap();
-    writeln!(
-        out,
-        "        float sink = ((device const float *)p4)[head];"
-    )
-    .unwrap();
+    writeln!(out, "        float sink = ((device const float *)p4)[head];").unwrap();
     writeln!(out, "        float old_m = M; float new_m = max(M, sink);").unwrap();
-    writeln!(
-        out,
-        "        float old_scale = exp(old_m - new_m); float row_scale = exp(sink - new_m);"
-    )
-    .unwrap();
+    writeln!(out, "        float old_scale = exp(old_m - new_m); float row_scale = exp(sink - new_m);").unwrap();
     writeln!(out, "        S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "        o0 *= old_scale; o1 *= old_scale; o2 *= old_scale; o3 *= old_scale;"
-    )
-    .unwrap();
+    {
+        let scaled: Vec<String> = (0..stripes).map(|i| format!("o{i} *= old_scale;")).collect();
+        writeln!(out, "        {}", scaled.join(" ")).unwrap();
+    }
     writeln!(out, "        M = new_m;").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    float inv_s = (S == 0.0f) ? 0.0f : 1.0f / S;").unwrap();
     writeln!(out, "    device float4 *dst4 = (device float4 *)(p5 + (uint64_t)token * dst_token_stride + (uint64_t)head * dst_head_stride);").unwrap();
-    writeln!(out, "    dst4[simd_lane +  0] = o0 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 32] = o1 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 64] = o2 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 96] = o3 * inv_s;").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        writeln!(out, "    dst4[simd_lane + {off:>2}] = o{i} * inv_s;").unwrap();
+    }
+}
+/// DS4 indexed_mixed_attention_heads8 at the shipped shape and staging.
+pub(super) fn emit_dsv4_indexed_mixed_attention_h8_msl(out: &mut String) {
+    emit_dsv4_indexed_mixed_attention_generic_msl(out, &MixedAttention::ds4());
 }
 /// DS4 indexed_mixed_attention_heads8_rb4: decode specialization of M33.
 /// Stages 4 selected K/V rows into kv_shared[4*128] at once and consumes them
 /// sequentially, cutting threadgroup barriers in the long top-k scan.
-pub(super) fn emit_dsv4_indexed_mixed_attention_h8_rb4_msl(out: &mut String) {
-    writeln!(out, "    threadgroup float4 kv_shared[4*128];").unwrap();
+pub(super) fn emit_dsv4_indexed_mixed_attention_batched_generic_msl(out: &mut String, shape: &MixedAttention) {
+    let stripes = shape.head_dim / 128;
+    let row_w = shape.head_dim / 4;
+    let heads = shape.heads_per_group;
+    let threads = 32 * heads;
+    let stage = shape.stage;
+    // Past four stripes a stripe would be named `q4`, the name of the Q row
+    // pointer, so wide heads name their stripes qs0.. instead.
+    let q_name = |i: u32| if stripes > 4 { format!("qs{i}") } else { format!("q{i}") };
+    let rows = shape.rows_per_batch;
+    let row_shift = row_w.trailing_zeros();
+    let row_mask = row_w - 1;
+    writeln!(out, "    threadgroup float4 kv_shared[{rows}*{row_w}];").unwrap();
     writeln!(out, "    uint token = tgpig.x;").unwrap();
-    writeln!(out, "    uint head  = tgpig.y * 8u + simd_id;").unwrap();
+    writeln!(out, "    uint head  = tgpig.y * {heads}u + simd_id;").unwrap();
     writeln!(out, "    if (token >= n_tokens || head >= n_head) return;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    device const float4 *q4 = (device const float4 *)(p0 + (uint64_t)token * q_token_stride + (uint64_t)head * q_head_stride);").unwrap();
-    writeln!(out, "    half4 q0 = (half4)q4[simd_lane +  0];").unwrap();
-    writeln!(out, "    half4 q1 = (half4)q4[simd_lane + 32];").unwrap();
-    writeln!(out, "    half4 q2 = (half4)q4[simd_lane + 64];").unwrap();
-    writeln!(out, "    half4 q3 = (half4)q4[simd_lane + 96];").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "    half4 {} = (half4)q4[simd_lane + {off:>2}];", q_name(i)).unwrap(),
+            MixedStage::Float => writeln!(out, "    float4 {} = q4[simd_lane + {off:>2}];", q_name(i)).unwrap(),
+        }
+    }
     writeln!(out).unwrap();
     writeln!(out, "    float M = -FLT_MAX/2.0f;").unwrap();
     writeln!(out, "    float S = 0.0f;").unwrap();
-    writeln!(out, "    float4 o0 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o1 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o2 = float4(0.0f);").unwrap();
-    writeln!(out, "    float4 o3 = float4(0.0f);").unwrap();
+    for i in 0..stripes {
+        writeln!(out, "    float4 o{i} = float4(0.0f);").unwrap();
+    }
     writeln!(out).unwrap();
     writeln!(out, "    uint qpos = pos0 + token;").unwrap();
     writeln!(out, "    uint last_pos = pos0 + n_tokens - 1u;").unwrap();
     writeln!(out, "    uint first_raw_pos = last_pos + 1u - n_raw;").unwrap();
     writeln!(out, "    uint raw_last_pos = first_raw_pos + n_raw - 1u;").unwrap();
-    writeln!(
-        out,
-        "    uint window_first = (window != 0u && qpos + 1u > window) ? (qpos + 1u - window) : 0u;"
-    )
-    .unwrap();
+    writeln!(out, "    uint window_first = (window != 0u && qpos + 1u > window) ? (qpos + 1u - window) : 0u;").unwrap();
     writeln!(out, "    uint first = max(first_raw_pos, window_first);").unwrap();
     writeln!(out, "    uint last  = min(qpos, raw_last_pos);").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    if (first <= last) {{").unwrap();
-    writeln!(
-        out,
-        "        for (uint base = first; base <= last; base += 4u) {{"
-    )
-    .unwrap();
-    writeln!(out, "            uint n_rows = min(4u, last - base + 1u);").unwrap();
-    writeln!(
-        out,
-        "            for (uint off = tid; off < n_rows * 128u; off += 256u) {{"
-    )
-    .unwrap();
-    writeln!(out, "                uint r = off >> 7;").unwrap();
-    writeln!(out, "                uint c = off & 127u;").unwrap();
-    writeln!(
-        out,
-        "                uint logical = base + r - first_raw_pos;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                uint row = (raw_start + logical) % raw_cap;"
-    )
-    .unwrap();
+    writeln!(out, "        for (uint base = first; base <= last; base += {rows}u) {{").unwrap();
+    writeln!(out, "            uint n_rows = min({rows}u, last - base + 1u);").unwrap();
+    writeln!(out, "            for (uint off = tid; off < n_rows * {row_w}u; off += {threads}u) {{").unwrap();
+    writeln!(out, "                uint r = off >> {row_shift};").unwrap();
+    writeln!(out, "                uint c = off & {row_mask}u;").unwrap();
+    writeln!(out, "                uint logical = base + r - first_raw_pos;").unwrap();
+    writeln!(out, "                uint row = (raw_start + logical) % raw_cap;").unwrap();
     writeln!(out, "                device const float4 *src = (device const float4 *)(p1 + (uint64_t)row * raw_row_stride);").unwrap();
     writeln!(out, "                kv_shared[off] = src[c];").unwrap();
     writeln!(out, "            }}").unwrap();
-    writeln!(
-        out,
-        "            threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "            threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "            for (uint r = 0u; r < n_rows; ++r) {{").unwrap();
-    writeln!(
-        out,
-        "                threadgroup const float4 *kv4 = kv_shared + r * 128u;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k0 = (half4)kv4[simd_lane +  0];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k1 = (half4)kv4[simd_lane + 32];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k2 = (half4)kv4[simd_lane + 64];"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                half4 k3 = (half4)kv4[simd_lane + 96];"
-    )
-    .unwrap();
-    writeln!(out, "                float score = dot((float4)q0,(float4)k0) + dot((float4)q1,(float4)k1) + dot((float4)q2,(float4)k2) + dot((float4)q3,(float4)k3);").unwrap();
+    writeln!(out, "                threadgroup const float4 *kv4 = kv_shared + r * {row_w}u;").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "                half4 k{i} = (half4)kv4[simd_lane + {off:>2}];").unwrap(),
+            MixedStage::Float => writeln!(out, "                float4 k{i} = kv4[simd_lane + {off:>2}];").unwrap(),
+        }
+    }
+    {
+        let dots: Vec<String> = (0..stripes).map(|i| format!("dot((float4){},(float4)k{i})", q_name(i))).collect();
+        writeln!(out, "                float score = {};", dots.join(" + ")).unwrap();
+    }
     writeln!(out, "                score = simd_sum(score) * scale;").unwrap();
-    writeln!(
-        out,
-        "                float old_m = M; float new_m = max(M, score);"
-    )
-    .unwrap();
+    writeln!(out, "                float old_m = M; float new_m = max(M, score);").unwrap();
     writeln!(out, "                float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);").unwrap();
     writeln!(out, "                S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "                o0 = o0 * old_scale + (float4)k0 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o1 = o1 * old_scale + (float4)k1 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o2 = o2 * old_scale + (float4)k2 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "                o3 = o3 * old_scale + (float4)k3 * row_scale;"
-    )
-    .unwrap();
+    for i in 0..stripes {
+        writeln!(out, "                o{i} = o{i} * old_scale + (float4)k{i} * row_scale;").unwrap();
+    }
     writeln!(out, "                M = new_m;").unwrap();
     writeln!(out, "            }}").unwrap();
-    writeln!(
-        out,
-        "            threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "            threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    uint visible = min((qpos + 1u) / ratio, n_comp);").unwrap();
     writeln!(out, "    device const int *row_topk = (device const int *)(p3 + (uint64_t)token * topk_token_stride);").unwrap();
     writeln!(out, "    bool stop = false;").unwrap();
-    writeln!(out, "    for (uint i = 0u; i < top_k && !stop; i += 4u) {{").unwrap();
-    writeln!(out, "        uint rows[4]; uint n_rows = 0u;").unwrap();
-    writeln!(
-        out,
-        "        for (uint j = 0u; j < 4u && (i + j) < top_k; ++j) {{"
-    )
-    .unwrap();
+    writeln!(out, "    for (uint i = 0u; i < top_k && !stop; i += {rows}u) {{").unwrap();
+    writeln!(out, "        uint rows[{rows}]; uint n_rows = 0u;").unwrap();
+    writeln!(out, "        for (uint j = 0u; j < {rows}u && (i + j) < top_k; ++j) {{").unwrap();
     writeln!(out, "            int idx = row_topk[i + j];").unwrap();
     writeln!(out, "            if (idx < 0) continue;").unwrap();
-    writeln!(
-        out,
-        "            if ((uint)idx >= visible) {{ stop = true; break; }}"
-    )
-    .unwrap();
+    writeln!(out, "            if ((uint)idx >= visible) {{ stop = true; break; }}").unwrap();
     writeln!(out, "            rows[n_rows++] = (uint)idx;").unwrap();
     writeln!(out, "        }}").unwrap();
     writeln!(out, "        if (n_rows == 0u) continue;").unwrap();
-    writeln!(
-        out,
-        "        for (uint off = tid; off < n_rows * 128u; off += 256u) {{"
-    )
-    .unwrap();
-    writeln!(out, "            uint r = off >> 7;").unwrap();
-    writeln!(out, "            uint c = off & 127u;").unwrap();
+    writeln!(out, "        for (uint off = tid; off < n_rows * {row_w}u; off += {threads}u) {{").unwrap();
+    writeln!(out, "            uint r = off >> {row_shift};").unwrap();
+    writeln!(out, "            uint c = off & {row_mask}u;").unwrap();
     writeln!(out, "            device const float4 *src = (device const float4 *)(p2 + (uint64_t)rows[r] * comp_row_stride);").unwrap();
     writeln!(out, "            kv_shared[off] = src[c];").unwrap();
     writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "        threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "        for (uint r = 0u; r < n_rows; ++r) {{").unwrap();
-    writeln!(
-        out,
-        "            threadgroup const float4 *kv4 = kv_shared + r * 128u;"
-    )
-    .unwrap();
-    writeln!(out, "            half4 k0 = (half4)kv4[simd_lane +  0];").unwrap();
-    writeln!(out, "            half4 k1 = (half4)kv4[simd_lane + 32];").unwrap();
-    writeln!(out, "            half4 k2 = (half4)kv4[simd_lane + 64];").unwrap();
-    writeln!(out, "            half4 k3 = (half4)kv4[simd_lane + 96];").unwrap();
-    writeln!(out, "            float score = dot((float4)q0,(float4)k0) + dot((float4)q1,(float4)k1) + dot((float4)q2,(float4)k2) + dot((float4)q3,(float4)k3);").unwrap();
+    writeln!(out, "            threadgroup const float4 *kv4 = kv_shared + r * {row_w}u;").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        match stage {
+            MixedStage::Half => writeln!(out, "            half4 k{i} = (half4)kv4[simd_lane + {off:>2}];").unwrap(),
+            MixedStage::Float => writeln!(out, "            float4 k{i} = kv4[simd_lane + {off:>2}];").unwrap(),
+        }
+    }
+    {
+        let dots: Vec<String> = (0..stripes).map(|i| format!("dot((float4){},(float4)k{i})", q_name(i))).collect();
+        writeln!(out, "            float score = {};", dots.join(" + ")).unwrap();
+    }
     writeln!(out, "            score = simd_sum(score) * scale;").unwrap();
-    writeln!(
-        out,
-        "            float old_m = M; float new_m = max(M, score);"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);"
-    )
-    .unwrap();
+    writeln!(out, "            float old_m = M; float new_m = max(M, score);").unwrap();
+    writeln!(out, "            float old_scale = exp(old_m - new_m); float row_scale = exp(score - new_m);").unwrap();
     writeln!(out, "            S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "            o0 = o0 * old_scale + (float4)k0 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o1 = o1 * old_scale + (float4)k1 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o2 = o2 * old_scale + (float4)k2 * row_scale;"
-    )
-    .unwrap();
-    writeln!(
-        out,
-        "            o3 = o3 * old_scale + (float4)k3 * row_scale;"
-    )
-    .unwrap();
+    for i in 0..stripes {
+        writeln!(out, "            o{i} = o{i} * old_scale + (float4)k{i} * row_scale;").unwrap();
+    }
     writeln!(out, "            M = new_m;").unwrap();
     writeln!(out, "        }}").unwrap();
-    writeln!(
-        out,
-        "        threadgroup_barrier(mem_flags::mem_threadgroup);"
-    )
-    .unwrap();
+    writeln!(out, "        threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    {{").unwrap();
-    writeln!(
-        out,
-        "        float sink = ((device const float *)p4)[head];"
-    )
-    .unwrap();
+    writeln!(out, "        float sink = ((device const float *)p4)[head];").unwrap();
     writeln!(out, "        float old_m = M; float new_m = max(M, sink);").unwrap();
-    writeln!(
-        out,
-        "        float old_scale = exp(old_m - new_m); float row_scale = exp(sink - new_m);"
-    )
-    .unwrap();
+    writeln!(out, "        float old_scale = exp(old_m - new_m); float row_scale = exp(sink - new_m);").unwrap();
     writeln!(out, "        S = S * old_scale + row_scale;").unwrap();
-    writeln!(
-        out,
-        "        o0 *= old_scale; o1 *= old_scale; o2 *= old_scale; o3 *= old_scale;"
-    )
-    .unwrap();
+    {
+        let scaled: Vec<String> = (0..stripes).map(|i| format!("o{i} *= old_scale;")).collect();
+        writeln!(out, "        {}", scaled.join(" ")).unwrap();
+    }
     writeln!(out, "        M = new_m;").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    float inv_s = (S == 0.0f) ? 0.0f : 1.0f / S;").unwrap();
     writeln!(out, "    device float4 *dst4 = (device float4 *)(p5 + (uint64_t)token * dst_token_stride + (uint64_t)head * dst_head_stride);").unwrap();
-    writeln!(out, "    dst4[simd_lane +  0] = o0 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 32] = o1 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 64] = o2 * inv_s;").unwrap();
-    writeln!(out, "    dst4[simd_lane + 96] = o3 * inv_s;").unwrap();
+    for i in 0..stripes {
+        let off = i * 32;
+        writeln!(out, "    dst4[simd_lane + {off:>2}] = o{i} * inv_s;").unwrap();
+    }
+}
+/// DS4 indexed_mixed_attention_heads8_rb4 at the shipped shape and staging.
+pub(super) fn emit_dsv4_indexed_mixed_attention_h8_rb4_msl(out: &mut String) {
+    emit_dsv4_indexed_mixed_attention_batched_generic_msl(out, &MixedAttention::ds4());
+}
+
+/// Precision the mixed-attention kernels stage Q and K rows in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum MixedStage {
+    Half,
+    Float,
+}
+
+/// Shape of the DS4 indexed mixed-attention kernels.
+///
+/// A head is `head_dim / 128` stripes of `float4`, one stripe per 32 lanes of a
+/// simdgroup, so `head_dim` is 128, 256, 512 or 1024. A threadgroup runs
+/// `heads_per_group` heads, one per 32-thread simdgroup. The batched kernel
+/// stages `rows_per_batch` key rows per threadgroup barrier.
+///
+/// The runtime `n_head` must be a multiple of `heads_per_group`. Threads for a
+/// head at or past `n_head` return before staging their share of the key row,
+/// so the other heads in that threadgroup would read unstaged memory. This
+/// cannot be checked here, because `n_head` is bound at dispatch time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct MixedAttention {
+    pub head_dim: u32,
+    pub heads_per_group: u32,
+    pub stage: MixedStage,
+    pub rows_per_batch: u32,
+}
+
+impl MixedAttention {
+    /// DeepSeek-V4: head_dim 512, 8 heads per threadgroup, half staging, 4 rows.
+    pub fn ds4() -> Self {
+        Self { head_dim: 512, heads_per_group: 8, stage: MixedStage::Half, rows_per_batch: 4 }
+    }
+
+    /// Why this shape cannot be emitted, if it cannot. `batched` selects the rb
+    /// kernel, which stages rows in chunks and so has no thread-count floor.
+    pub fn check(&self, batched: bool) -> Result<(), String> {
+        let (d, h) = (self.head_dim, self.heads_per_group);
+        if !matches!(d, 128 | 256 | 512 | 1024) {
+            return Err(format!(
+                "indexed_mixed_attention: head_dim {d} must be 128, 256, 512 or 1024 (float4 stripes over 32 lanes)"
+            ));
+        }
+        if !(1..=32).contains(&h) {
+            return Err(format!("indexed_mixed_attention: heads_per_group {h} must be from 1 to 32"));
+        }
+        if !batched && 32 * h < d / 4 {
+            return Err(format!(
+                "indexed_mixed_attention: {h} heads per group give {} threads, fewer than the {} float4 rows a key row stages",
+                32 * h,
+                d / 4
+            ));
+        }
+        if batched && !(1..=16).contains(&self.rows_per_batch) {
+            return Err(format!(
+                "indexed_mixed_attention: rows_per_batch {} must be from 1 to 16",
+                self.rows_per_batch
+            ));
+        }
+        Ok(())
+    }
 }
 /// DS4 flash_attn_ext_vec_reduce: split-K decode reducer.
 /// Each row's NWG partial outputs are merged across one simdgroup using simd_max
@@ -21568,4 +21546,17 @@ pub(super) fn emit_matmul_transposed_msl(out: &mut String) {
     writeln!(out, "    for (; k < K; k++)").unwrap();
     writeln!(out, "        acc += p0[m * K + k] * p1[n * K + k];").unwrap();
     writeln!(out, "    p2[m * N + n] = acc;").unwrap();
+}
+
+/// Block size the DeepSeek-V4 FP8 KV path quantizes with.
+pub(super) const FP8_KV_DS4_BLOCK: u32 = 64;
+
+/// Why an FP8 KV block size cannot be emitted, if it cannot.
+pub(super) fn check_fp8_kv_block(kernel: &str, block: u32) -> Result<(), String> {
+    if !(2..=1024).contains(&block) || !block.is_power_of_two() {
+        return Err(format!(
+            "{kernel}: block {block} must be a power of two from 2 to 1024 (one thread per element, tree max over the block)"
+        ));
+    }
+    Ok(())
 }

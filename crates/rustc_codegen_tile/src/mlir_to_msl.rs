@@ -487,6 +487,9 @@ struct MslContext {
     /// Head count read from a `__tile_indexer_score_one_direct_f32` call, or why
     /// it could not be read.
     indexer_one_n_head: Option<Result<u32, String>>,
+    /// Compile-time shape operands appended to a canned kernel's intrinsic:
+    /// `Some(Ok(None))` when the call used its original operands only.
+    shape_operands: Option<Result<Option<Vec<u32>>, String>>,
 }
 
 impl MslContext {
@@ -506,6 +509,7 @@ impl MslContext {
             dtype: "f32".into(),
             indexer_shape: None,
             indexer_one_n_head: None,
+            shape_operands: None,
         }
     }
 
@@ -1511,14 +1515,16 @@ pub fn convert_mlir_to_msl(mlir_text: &str) -> Result<String, String> {
     }
     writeln!(out).unwrap();
 
-    // Pre-scan for kernels that need E4M3FN helpers in the file prelude.
-    let needs_e4m3fn = module.functions.iter().any(|f| {
-        f.body_lines.iter().any(|l| {
-            l.contains("__tile_kv_fp8_store_f32") || l.contains("__tile_fp8_kv_quantize_f32")
-        })
-    });
-    if needs_e4m3fn {
-        emit_e4m3fn_helpers(&mut out);
+    // Pre-scan for kernels that need E4M3FN helpers in the file prelude. They are
+    // guarded, so files for the two FP8 kernels can share one library.
+    let uses = |needle: &str| {
+        module.functions.iter().any(|f| f.body_lines.iter().any(|l| l.contains(needle)))
+    };
+    let has_store = uses("__tile_kv_fp8_store_f32");
+    let has_quantize = uses("__tile_fp8_kv_quantize_f32");
+    if has_store || has_quantize {
+        let other = if has_store { "dsv4_fp8_kv_quantize" } else { "dsv4_kv_fp8_store" };
+        emit_e4m3fn_helpers_guarded(&mut out, other);
     }
 
     // Pre-scan for kernels that need GELU constants in the file prelude.
@@ -8428,8 +8434,20 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::SortI32RowsAsc => emit_sort_i32_rows_asc_msl(out),
         KernelType::Dsv4SoftmaxPool => emit_dsv4_softmax_pool_msl(out),
         KernelType::Dsv4CompressorStoreOne => emit_dsv4_compressor_store_one_msl(out),
-        KernelType::Dsv4KvFp8Store => emit_dsv4_kv_fp8_store_msl(out),
-        KernelType::Dsv4Fp8KvQuantize => emit_dsv4_fp8_kv_quantize_msl(out),
+        KernelType::Dsv4KvFp8Store | KernelType::Dsv4Fp8KvQuantize => {
+            let store = ctx.kernel_type == KernelType::Dsv4KvFp8Store;
+            let kernel = if store { "kv_fp8_store" } else { "fp8_kv_quantize" };
+            let block = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => FP8_KV_DS4_BLOCK,
+            };
+            check_fp8_kv_block(kernel, block)?;
+            if store {
+                emit_dsv4_kv_fp8_store_generic_msl(out, block)
+            } else {
+                emit_dsv4_fp8_kv_quantize_generic_msl(out, block)
+            }
+        }
         KernelType::FlashAttnExtPad => emit_flash_attn_ext_pad_msl(out),
         KernelType::FlashAttnExtBlk => emit_flash_attn_ext_blk_msl(out),
         KernelType::Dsv4IndexerScoreOneDirect => {
@@ -8440,7 +8458,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             };
             emit_dsv4_indexer_score_one_direct_generic_msl(out, n_head)
         }
-        KernelType::Dsv4RouterFinalizeOne => emit_dsv4_router_finalize_one_msl(out),
+        KernelType::Dsv4RouterFinalizeOne => {
+            let (n_expert, top_k) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (ROUTER_DS4_N_EXPERT, ROUTER_DS4_TOP_K),
+            };
+            check_router_shape(n_expert, top_k)?;
+            emit_dsv4_router_finalize_one_generic_msl(out, n_expert, top_k)
+        }
         KernelType::Dsv4IndexerScoresTiledF32 | KernelType::Dsv4IndexerScoresTiled => {
             let shape = match &ctx.indexer_shape {
                 Some(Ok(shape)) => *shape,
@@ -8456,9 +8481,31 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             shape.check()?;
             emit_dsv4_indexer_scores_tiled_generic_msl(out, &shape)
         }
-        KernelType::Dsv4IndexedMixedAttentionH8 => emit_dsv4_indexed_mixed_attention_h8_msl(out),
-        KernelType::Dsv4IndexedMixedAttentionH8Rb4 => {
-            emit_dsv4_indexed_mixed_attention_h8_rb4_msl(out)
+        KernelType::Dsv4IndexedMixedAttentionH8 | KernelType::Dsv4IndexedMixedAttentionH8Rb4 => {
+            let batched = ctx.kernel_type == KernelType::Dsv4IndexedMixedAttentionH8Rb4;
+            let mut shape = MixedAttention::ds4();
+            if let Some(v) = recorded_shape(&ctx)? {
+                shape.head_dim = v[0];
+                shape.heads_per_group = v[1];
+                shape.stage = match v[2] {
+                    16 => MixedStage::Half,
+                    32 => MixedStage::Float,
+                    bits => {
+                        return Err(format!(
+                            "indexed_mixed_attention: stage_bits {bits} must be 16 (half) or 32 (float)"
+                        ))
+                    }
+                };
+                if batched {
+                    shape.rows_per_batch = v[3];
+                }
+            }
+            shape.check(batched)?;
+            if batched {
+                emit_dsv4_indexed_mixed_attention_batched_generic_msl(out, &shape)
+            } else {
+                emit_dsv4_indexed_mixed_attention_generic_msl(out, &shape)
+            }
         }
         KernelType::LagunaHeadRmsNormRopeNeox => emit_laguna_head_rms_norm_rope_neox_msl(out),
         KernelType::LagunaQ5KMatvecF32 => emit_laguna_q5_K_matvec_f32_msl(out),
@@ -9685,6 +9732,50 @@ fn emit_partition_cell_msl(out: &mut String, num_bufs: usize) {
     writeln!(out, "    }}").unwrap();
 }
 
+/// Read the compile-time shape operands appended to an intrinsic call.
+///
+/// `base` is the intrinsic's original operand count. A call with exactly that
+/// many operands keeps the shipped shape (`Ok(None)`); a call with `names.len()`
+/// more supplies one positive integer constant per name, in order. Any other
+/// count, or a non-constant shape operand, is an error naming the operand.
+fn trailing_shape_operands(
+    callee: &str,
+    args: &[String],
+    base: usize,
+    names: &[&str],
+    ctx: &MslContext,
+) -> Result<Option<Vec<u32>>, String> {
+    if args.len() == base {
+        return Ok(None);
+    }
+    if args.len() != base + names.len() {
+        return Err(format!(
+            "{callee}: expected {base} operands, or {} with {}; got {}",
+            base + names.len(),
+            names.join(" and "),
+            args.len()
+        ));
+    }
+    names
+        .iter()
+        .enumerate()
+        .map(|(i, what)| match ctx.resolve_const(args[base + i].trim()) {
+            0 => Err(format!(
+                "{callee}: operand {} ({what}) must be a positive integer constant, got `{}`",
+                base + i,
+                args[base + i].trim()
+            )),
+            v => Ok(v),
+        })
+        .collect::<Result<Vec<u32>, String>>()
+        .map(Some)
+}
+
+/// The shape operands recorded for the kernel being emitted.
+fn recorded_shape(ctx: &MslContext) -> Result<Option<Vec<u32>>, String> {
+    ctx.shape_operands.clone().unwrap_or(Ok(None))
+}
+
 /// Read the shape of a `__tile_indexer_scores_tiled_*` call.
 ///
 /// The intrinsic takes 15 operands (4 buffers, 11 runtime scalars) followed by
@@ -10176,11 +10267,13 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_kv_fp8_store_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4KvFp8Store;
+                        ctx.shape_operands = Some(trailing_shape_operands(&callee, &args, 5, &["block"], ctx));
                     }
                 }
                 "__tile_fp8_kv_quantize_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4Fp8KvQuantize;
+                        ctx.shape_operands = Some(trailing_shape_operands(&callee, &args, 13, &["block"], ctx));
                     }
                 }
                 "__tile_flash_attn_ext_pad_f32" => {
@@ -10213,6 +10306,8 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_router_finalize_one_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4RouterFinalizeOne;
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 10, &["n_expert", "top_k"], ctx));
                     }
                 }
                 "__tile_indexer_scores_tiled_f32" | "__tile_indexer_scores_tiled_bf16" => {
@@ -10230,11 +10325,25 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_indexed_mixed_attention_h8_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4IndexedMixedAttentionH8;
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            24,
+                            &["head_dim", "heads_per_group", "stage_bits"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_indexed_mixed_attention_h8_rb4_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4IndexedMixedAttentionH8Rb4;
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            24,
+                            &["head_dim", "heads_per_group", "stage_bits", "rows_per_batch"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_flash_attn_ext_vec_reduce_f32" => {
