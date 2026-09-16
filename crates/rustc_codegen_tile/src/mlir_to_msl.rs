@@ -22449,7 +22449,9 @@ fn emit_kv_cache_update_prefill_msl(out: &mut String) {
 /// schedule. This kernel used to materialise the whole score row into a
 /// `threadgroup float scores[256]` and clamp the key range to fit it:
 ///
-///     uint kv_len = min(total_kv_len, 256u);
+/// ```text
+/// uint kv_len = min(total_kv_len, 256u);
+/// ```
 ///
 /// which drops every key past 255 and returns a confidently wrong answer for
 /// any prompt longer than that. Nothing reports it -- the kernel does not read
@@ -23908,18 +23910,23 @@ module {
 }
 "#;
         let msl = convert_mlir_to_msl(mlir).unwrap();
+        // These assert the reduction still TRACKS AN INDEX, not what it is called.
+        // The variables were renamed best_idx/best_val -> local_idx/local_max in a
+        // refactor; the behaviour was verified separately and numerically by
+        // tests/argmax_numeric_gate.rs (argmax + lowest-index tie-break), so a
+        // rename no longer reads as a regression.
         assert!(
-            msl.contains("best_idx"),
-            "argmax must track best_idx:\n{}",
+            msl.contains("local_idx"),
+            "argmax must track an index:\n{}",
             msl
         );
         assert!(
-            msl.contains("best_val"),
+            msl.contains("local_max"),
             "argmax must track best_val:\n{}",
             msl
         );
         assert!(
-            msl.contains("p1[row] = best_idx"),
+            msl.contains("p1[row] = (float)idx_data[0]"),
             "argmax must write to p1:\n{}",
             msl
         );
@@ -25563,7 +25570,7 @@ mod emit_tail_tests {
             // once the prologue's `base` was in scope beside it. Pin the scan
             // instead: it is what argmax means, and `>` is what makes it argmax
             // rather than the argmin this op spent its life lowered to.
-            "if (v > best_val) { best_val = v; best_idx = j; }",
+            "if (v > local_max) { local_max = v; local_idx = k; }",
             "emit_argmax_msl",
         );
     }
@@ -27210,10 +27217,24 @@ module {
         let mut a = String::new();
         emit_matmul_f16_simdgroup_msl(&mut a);
         assert!(a.contains("K & ~7u"), "matmul_f16_simdgroup lost its K guard:\n{a}");
-        assert!(a.contains("for (uint kt = _k_full; kt < K; ++kt)"), "no scalar K tail:\n{a}");
+        // The scalar `kt` loop became a staged boundary pass over the same
+        // remainder when both lowerings moved to emit_matmul_simdgroup_body: the
+        // interior stops at k_full and a second loop runs from there to K.
+        // Correctness at a non-multiple-of-8 K is checked numerically by
+        // tests/sgemm_ktail_numeric_gate.rs (K = 20, exact).
         assert!(
-            !a.contains("k0 < K;"),
-            "the k0 loop must stop at _k_full, not K:\n{a}"
+            a.contains("for (uint k0 = interior ? k_full : 0u; k0 < K; k0 += 8u)"),
+            "no K tail pass:\n{a}"
+        );
+        // This used to forbid `k0 < K;` outright, because in the old shape the
+        // INTERIOR loop ran to K and read past the last whole tile. In the shared
+        // body the interior stops at k_full and a separate boundary pass runs from
+        // there to K, so the string is now expected — what must hold is that the
+        // interior is the one bounded by k_full.
+        assert!(
+            a.contains("for (; kk + 16u <= k_full; kk += 16u)")
+                && a.contains("for (; kk < k_full; kk += 8u)"),
+            "the interior loops must stop at k_full:\n{a}"
         );
     }
 
