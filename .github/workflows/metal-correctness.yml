@@ -1,0 +1,88 @@
+name: Metal correctness (initial add)
+
+# Staged coverage for issue #32: one small f32 add case through the current
+# source Metal emitter, MSL runtime compile, GPU execute/readback, and
+# PyTorch CPU compare. Passing this workflow is not #31 first-batch complete.
+#
+# No path filters: emitter-adjacent changes can land outside a guessed path.
+# Manual dispatch follows default-branch workflow discovery: this file must
+# be on the default branch before workflow_dispatch is offered in the UI.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metal-correctness:
+    name: add_f32_small (initial; not #31 complete)
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Slim rust-toolchain.toml for CI
+        run: |
+          cat > rust-toolchain.toml << 'TOML'
+          [toolchain]
+          channel = "nightly-2025-08-04"
+          components = ["rustc", "cargo"]
+          TOML
+
+      - name: Install Rust
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+
+      - name: Record runner environment
+        run: |
+          echo "== runner metadata =="
+          sw_vers
+          uname -a
+          echo "ImageOS=${ImageOS:-}"
+          echo "RUNNER_IMAGE_VERSION=${RUNNER_IMAGE_VERSION:-}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH:-}"
+          echo "GITHUB_SHA=${GITHUB_SHA:-}"
+          echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT:-}"
+          echo "== rustc / cargo =="
+          rustc -vV
+          cargo -V
+          echo "== python =="
+          python3 --version
+          echo "== Xcode =="
+          xcodebuild -version || true
+
+      - name: CLI self-check and workflow contract tests
+        working-directory: crates/metal_correctness
+        run: cargo test --release -- --nocapture
+
+      - name: Install PyTorch CPU (limited retries)
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          # shellcheck disable=SC1091
+          . "$RUNNER_TEMP/venv/bin/activate"
+          attempt=1
+          max=3
+          while [ "$attempt" -le "$max" ]; do
+            echo "pip install torch attempt ${attempt}/${max}"
+            if pip install torch; then
+              python3 -c "import torch; print('PYTORCH_VERSION=' + torch.__version__)"
+              exit 0
+            fi
+            echo "pip install torch failed on attempt ${attempt}"
+            attempt=$((attempt + 1))
+            sleep 5
+          done
+          echo "::error::PyTorch install retries exhausted"
+          exit 1
+
+      - name: Run full delivered Metal correctness list
+        working-directory: crates/metal_correctness
+        run: cargo run --release
