@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   metal-correctness:
-    name: add_f32_small (initial; not #31 complete)
+    name: add_f32_small (initial; not issue 31 complete)
     runs-on: macos-15
     timeout-minutes: 45
     steps:

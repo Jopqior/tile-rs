@@ -170,7 +170,7 @@ fn workflow_runs_the_full_delivered_list_on_free_macos15() {
         "workflow must invoke the verification entry"
     );
     assert!(
-        yaml.to_lowercase().contains("not") && yaml.contains("#31"),
-        "workflow must say initial coverage is not #31 complete\n{yaml}"
+        yaml.contains("not issue 31 complete") || yaml.contains("not #31"),
+        "workflow must say initial coverage is not issue 31 complete\n{yaml}"
     );
 }
