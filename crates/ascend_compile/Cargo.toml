@@ -1,0 +1,16 @@
+[package]
+name = "ascend_compile"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "ascend-compile"
+path = "src/main.rs"
+
+[dependencies]
+tile_kernel_builder_config = { path = "../tile_kernel_builder_config" }
+anyhow = "1.0"
+tempfile = "3"

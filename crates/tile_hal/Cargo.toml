@@ -7,12 +7,12 @@ description = "Hardware Abstraction Layer for multi-backend accelerator dispatch
 
 [features]
 default = []
+ascend = ["ascend_rs"]
 cuda = ["libloading"]
+aie = ["libloading"]
 
 [dependencies]
+ascend_rs = { path = "../ascend_rs", optional = true }
 libloading = { version = "0.8", optional = true }
 
 [dev-dependencies]
-
-[lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("ascend"))'] }

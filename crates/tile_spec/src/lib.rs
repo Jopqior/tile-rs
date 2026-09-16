@@ -24,5 +24,6 @@
 //! emitters with no LLVM, exactly like the generality-matrix tests do).
 
 pub mod gherkin;
+pub mod steps;
 
 pub use gherkin::{Runner, StepKind, World};

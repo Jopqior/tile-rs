@@ -1,0 +1,18 @@
+# derived-from: crates/tile_kernel_builder/Cargo.toml
+# Public copy of that manifest without the path dependency on the codegen
+# backend crate, which is not published. The backend is found at run time
+# instead: TILERS_CODEGEN_SO, or the prebuilt library on the library path.
+# scripts/check_public_tree.py fails if this copy differs from its origin in
+# any other line.
+[package]
+name = "tile_kernel_builder"
+version = "0.0.1"
+license = "MIT OR Apache-2.0"
+edition = "2024"
+
+[dependencies]
+tile_kernel_builder_config = { path = "../tile_kernel_builder_config" }
+anyhow = "1.0"
+cmake = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

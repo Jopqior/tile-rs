@@ -104,6 +104,11 @@ impl BackendSelector {
                 let dev = crate::cuda::CudaDevice::new(ordinal)?;
                 Ok(Box::new(dev))
             }
+            #[cfg(feature = "aie")]
+            BackendKind::Aie => {
+                let dev = crate::aie::AieDevice::new(ordinal)?;
+                Ok(Box::new(dev))
+            }
             other => Err(HalError::BackendNotAvailable(format!(
                 "{:?} backend not compiled (enable the feature flag)",
                 other

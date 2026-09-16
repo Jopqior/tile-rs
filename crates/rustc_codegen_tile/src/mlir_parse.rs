@@ -86,6 +86,11 @@ pub struct MlirFunc {
     pub args: Vec<FuncArg>,
     pub is_entry: bool,
     pub body_lines: Vec<String>,
+    /// Per-tile shared-memory / UB budget in bytes, from a `tile.budget = <N>`
+    /// function attribute (emitted by `#[tile_kernel(budget=..)]`). When present,
+    /// backends emit a static capacity guard (F1) into the generated kernel so the
+    /// budget guarantee reaches the DEPLOYED code, not just the typed source.
+    pub budget: Option<u32>,
 }
 
 pub struct FuncArg {
@@ -106,6 +111,20 @@ pub struct MlirGlobal {
 pub struct MlirModule {
     pub functions: Vec<MlirFunc>,
     pub globals: Vec<MlirGlobal>,
+}
+
+/// Extract `tile.budget = <N>` (bytes) from a function-attribute line, in either
+/// the pretty (`... attributes {hacc.entry, tile.budget = 4096 : i32} {`) or the
+/// generic (`}) {hacc.entry, ..., tile.budget = 4096 : i32} : () -> ()`) format.
+fn parse_budget_attr(line: &str) -> Option<u32> {
+    let pos = line.find("tile.budget")?;
+    let after_eq = line[pos + "tile.budget".len()..].split('=').nth(1)?;
+    let digits: String = after_eq
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<u32>().ok()
 }
 
 pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
@@ -129,6 +148,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                 .ok_or_else(|| format!("Cannot parse function name from: {}", line))?;
             let args = extract_func_args(line);
             let is_entry = line.contains("hacc.entry");
+            let budget = parse_budget_attr(line);
 
             // Collect function body by tracking brace nesting
             let mut body_lines = Vec::new();
@@ -152,6 +172,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                 args,
                 is_entry,
                 body_lines,
+                budget,
             });
         // Match function in MLIR generic format:
         //   "llvm.func"() <{sym_name = "name", function_type = ..., ...}> ({
@@ -165,6 +186,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
             // Collect body and the closing line (which has discardable attrs)
             let mut body_lines = Vec::new();
             let mut is_entry = false;
+            let mut budget: Option<u32> = None;
             let mut bb_args = Vec::new();
 
             // Track parenthesized region nesting: the region starts with ({
@@ -180,6 +202,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                 if depth <= 0 {
                     // This is the closing line: }) {hacc.entry, ...} : () -> ()
                     is_entry = body_line.contains("hacc.entry");
+                    budget = parse_budget_attr(body_line);
                 } else if body_line.starts_with("^bb0(") || body_line.starts_with("^bb0:") {
                     // Extract args from ^bb0(%arg0: !llvm.ptr<1>, ...)
                     bb_args = extract_bb_args(body_line);
@@ -202,6 +225,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                     args,
                     is_entry,
                     body_lines,
+                    budget,
                 });
             }
         } else {
@@ -253,7 +277,11 @@ pub fn extract_generic_func_type_args(line: &str) -> Vec<FuncArg> {
         Some(p) => p,
         None => return Vec::new(),
     };
-    let arg_str = &func_sig[open + 1..func_sig.len().saturating_sub(1)];
+    let close = func_sig.len().saturating_sub(1);
+    if open + 1 > close {
+        return Vec::new();
+    }
+    let arg_str = &func_sig[open + 1..close];
     if arg_str.trim().is_empty() {
         return Vec::new();
     }
@@ -322,6 +350,11 @@ pub fn extract_bb_args(line: &str) -> Vec<FuncArg> {
             }
             _ => {}
         }
+    }
+    // Unbalanced/truncated input: no matching ')' (close <= open) -> bail,
+    // don't slice line[open+1..close] with start > end (panic).
+    if close <= open {
+        return Vec::new();
     }
     let arg_str = &line[open + 1..close];
     if arg_str.trim().is_empty() {
@@ -1073,6 +1106,9 @@ pub fn extract_paren_contents(s: &str) -> String {
             _ => {}
         }
     }
+    if close <= open {
+        return String::new();
+    } // unbalanced/truncated guard
     s[open + 1..close].trim().to_string()
 }
 
@@ -1086,6 +1122,9 @@ pub fn extract_bracket_contents(s: &str) -> String {
         Some(p) => open + p,
         None => return String::new(),
     };
+    if close <= open {
+        return String::new();
+    } // unbalanced/truncated guard
     s[open + 1..close].trim().to_string()
 }
 
@@ -1190,7 +1229,7 @@ pub fn parse_global_decl(line: &str) -> Option<MlirGlobal> {
             // Dense array: dense<[v1, v2, ...]> : tensor<NxT>
             if let Some(bracket_end) = val_rest.find("]>") {
                 let dense_content = &val_rest[6..bracket_end + 1]; // [v1, v2, ...]
-                                                                   // Find the type after " : "
+                // Find the type after " : "
                 let type_marker = &val_rest[bracket_end + 2..];
                 if let Some(colon_pos) = type_marker.find(" : ") {
                     let type_str = type_marker[colon_pos + 3..].trim();
@@ -1289,6 +1328,12 @@ pub fn extract_func_args(line: &str) -> Vec<FuncArg> {
             }
             _ => {}
         }
+    }
+
+    // Unbalanced / truncated input: no matching ')' was found (close still <= open).
+    // Bail gracefully instead of slicing line[open+1..close] with start > end (panic).
+    if close <= open {
+        return args;
     }
 
     let arg_str = &line[open + 1..close];
@@ -1452,7 +1497,7 @@ mod parse_tests {
         assert!(args[0].is_gm); // ptr<1>
         assert!(args[1].is_gm);
         assert!(!args[2].is_gm); // i32
-                                 // No marker -> empty.
+        // No marker -> empty.
         assert!(extract_generic_func_type_args("nope").is_empty());
         // Empty arg list -> empty.
         assert!(extract_generic_func_type_args("function_type = !llvm.func<void ()>").is_empty());
@@ -1651,10 +1696,7 @@ module {
                 "llvm.insertvalue %v into %agg[0]",
             ),
             // unconditional br (no operands)
-            (
-                "\"llvm.br\"()[^bb1] <{}> : () -> ()",
-                "llvm.br ^bb1",
-            ),
+            ("\"llvm.br\"()[^bb1] <{}> : () -> ()", "llvm.br ^bb1"),
             // unary cast (one of the table)
             (
                 "%8 = \"llvm.sext\"(%x) <{}> : (i16) -> i32",
@@ -1701,10 +1743,7 @@ module {
                 "llvm.return %v : i32",
             ),
             // void return
-            (
-                "\"llvm.return\"() <{}> : () -> ()",
-                "llvm.return",
-            ),
+            ("\"llvm.return\"() <{}> : () -> ()", "llvm.return"),
         ];
         for (input, expect) in cases {
             let got = normalize_generic_to_pretty(input);

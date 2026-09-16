@@ -38,12 +38,13 @@ pub mod buf;
 pub mod core;
 pub mod kernel_ops;
 pub mod pipeline;
+pub mod emitted_kernels;
 pub mod tile;
 
-pub use tile_std_macros::*;
 pub use core::prelude::v1::*;
 pub use core::*;
 pub use kernel_ops::*;
+pub use tile_std_macros::*;
 
 /// Unified Buffer (UB) buffer ID — returned by __tile_buf_alloc.
 #[derive(Copy, Clone)]
@@ -347,43 +348,63 @@ extern "C" {
 
 #[inline(always)]
 pub unsafe fn __tile_v_relu_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::relu_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::relu_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_relu_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::relu_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::relu_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_sigmoid_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::sigmoid_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::sigmoid_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_sigmoid_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::sigmoid_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::sigmoid_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_tanh_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::tanh_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::tanh_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_tanh_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::tanh_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::tanh_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_neg_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::neg_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::neg_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_v_neg_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::neg_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::neg_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_expm1_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::expm1_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::expm1_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_expm1_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::expm1_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::expm1_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_gelu_f32(dst: UbBuf, src: UbBuf, n: u32) {
@@ -406,19 +427,27 @@ pub unsafe fn __tile_v_gelu_f16(dst: UbBuf, src: UbBuf, n: u32) {
 // (bf16 uses the same u16 physical representation)
 #[inline(always)]
 pub unsafe fn __tile_relu_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::relu_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::relu_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_sigmoid_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::sigmoid_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::sigmoid_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_tanh_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::tanh_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::tanh_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_expm1_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { kernel_ops::expm1_f16(dst, src, n); }
+    unsafe {
+        kernel_ops::expm1_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_gelu_bf16(dst: UbBuf, src: UbBuf, n: u32) {
@@ -431,22 +460,45 @@ pub unsafe fn __tile_gelu_bf16(dst: UbBuf, src: UbBuf, n: u32) {
 #[inline(always)]
 pub unsafe fn __tile_fast_gelu_bf16(dst: UbBuf, src: UbBuf, n: u32) {
     // fast_gelu delegates to gelu for bf16
-    unsafe { __tile_gelu_bf16(dst, src, n); }
+    unsafe {
+        __tile_gelu_bf16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_softplus_bf16(dst: UbBuf, src: UbBuf, n: u32) {
     // softplus(x) = ln(1 + exp(x)) — delegate to f32 version
-    unsafe { kernel_ops::softplus_f32(dst, src, n); }
+    unsafe {
+        kernel_ops::softplus_f32(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_atan_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { __tile_atan_f16(dst, src, n); }
+    unsafe {
+        __tile_atan_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_erf_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { __tile_erf_f16(dst, src, n); }
+    unsafe {
+        __tile_erf_f16(dst, src, n);
+    }
 }
 #[inline(always)]
 pub unsafe fn __tile_erfinv_bf16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { __tile_erfinv_f16(dst, src, n); }
+    unsafe {
+        __tile_erfinv_f16(dst, src, n);
+    }
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time capacity guard (F1), no_core-safe.
+//
+// A trait bound that resolves only when the budget condition holds. When a tile
+// footprint exceeds the declared budget the bound BudgetCheck<false>: BudgetOk
+// fails to resolve — a TYPE error at compile time, with no panic/unwind path
+// (kernels are no_std/no_core, where a message-assert would need the panic
+// lang item). The #[tile_kernel(budget=..)] macro emits one bound per view.
+// ---------------------------------------------------------------------------
+pub struct BudgetCheck<const OK: bool>;
+pub trait BudgetOk {}
+impl BudgetOk for BudgetCheck<true> {}

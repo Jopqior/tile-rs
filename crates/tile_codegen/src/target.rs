@@ -17,6 +17,19 @@
 pub struct HardwareParams {
     /// Unified-buffer size in bytes (Ascend cube/vector unit). `0` = unused.
     pub ub_size: usize,
+    /// Vector width to apply to loops the access-pattern classifier calls
+    /// vectorisable. `0`/`1` = the target has not opted in and nothing changes,
+    /// so wiring a backend to the policy is inert until it declares a width.
+    ///
+    /// Measured on an M1 Ultra: 4 is the optimum on Apple (`down_proj` K=8960 —
+    /// scalar 98.5 us, width-4 67.7 us, width-8 91.7 us). Not yet measured on
+    /// NVIDIA; the GB10 box was unreachable when this landed.
+    pub preferred_vector_width: usize,
+    /// Lanes per warp / wavefront / SIMD-group: 32 NVIDIA and Apple, 64 AMD.
+    /// `0` = unknown. Modelled after Mojo's `std/gpu/host/info.mojo`.
+    pub warp_size: usize,
+    /// Upper bound on threads per block/threadgroup. `0` = unknown.
+    pub max_threads_per_block: usize,
 }
 
 /// Inputs to [`CodegenTarget::emit`] beyond the MLIR text itself. Std-only.
@@ -51,9 +64,8 @@ pub struct EmitOut {
 ///
 /// Adding a target is: implement this trait, then `register(Box::new(MyTarget))`
 /// on a [`crate::registry::TargetRegistry`]. That is the whole extension surface
-/// — no enum to extend, no dispatch `match` arm to add. The closed Ascend
-/// backend implements this exactly like the open ones; the only difference is it
-/// lives in a feature-gated (and ultimately separate-repo) module.
+/// — no enum to extend, no dispatch `match` arm to add. Backends outside this
+/// crate implement it the same way.
 pub trait CodegenTarget {
     /// Stable id, matched against `TILERS_CODEGEN_PATH` (e.g. `"gpu"`, `"msl"`,
     /// `"cpp"`, `"pto"`). Must be unique within a registry.

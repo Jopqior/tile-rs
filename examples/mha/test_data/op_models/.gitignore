@@ -1,0 +1,2 @@
+# Pre-compiled operator models are target-specific (built by cargo build)
+*.om

@@ -45,9 +45,13 @@ struct CudaDriver {
     cu_module_get_function: unsafe extern "C" fn(*mut CuFunction, CuModule, *const u8) -> CuResult,
     cu_launch_kernel: unsafe extern "C" fn(
         CuFunction,
-        u32, u32, u32, // grid
-        u32, u32, u32, // block
-        u32,           // shared mem
+        u32,
+        u32,
+        u32, // grid
+        u32,
+        u32,
+        u32, // block
+        u32, // shared mem
         CuStream,
         *mut *mut c_void, // args
         *mut *mut c_void, // extra
@@ -62,60 +66,59 @@ static CUDA_DRIVER: OnceLock<Result<CudaDriver, String>> = OnceLock::new();
 
 fn cuda_driver() -> HalResult<&'static CudaDriver> {
     CUDA_DRIVER
-        .get_or_init(|| {
-            unsafe {
-                let lib = libloading::Library::new("libcuda.so")
-                    .or_else(|_| libloading::Library::new("libcuda.so.1"))
-                    .map_err(|e| format!("cannot load libcuda.so: {}", e))?;
+        .get_or_init(|| unsafe {
+            let lib = libloading::Library::new("libcuda.so")
+                .or_else(|_| libloading::Library::new("libcuda.so.1"))
+                .map_err(|e| format!("cannot load libcuda.so: {}", e))?;
 
-                macro_rules! sym {
-                    ($name:ident, $sym:expr) => {
-                        let $name = *lib.get::<unsafe extern "C" fn() -> CuResult>($sym)
-                            .map_err(|e| format!("symbol {} not found: {}", stringify!($name), e))?;
-                        #[allow(clippy::transmute_ptr_to_ptr)]
-                        let $name = std::mem::transmute($name);
-                    };
-                }
-
-                sym!(cu_init, b"cuInit\0");
-                sym!(cu_device_get, b"cuDeviceGet\0");
-                sym!(cu_device_get_count, b"cuDeviceGetCount\0");
-                sym!(cu_device_get_name, b"cuDeviceGetName\0");
-                sym!(cu_ctx_create, b"cuCtxCreate_v2\0");
-                sym!(cu_ctx_destroy, b"cuCtxDestroy_v2\0");
-                sym!(cu_stream_create, b"cuStreamCreate\0");
-                sym!(cu_stream_destroy, b"cuStreamDestroy_v2\0");
-                sym!(cu_stream_synchronize, b"cuStreamSynchronize\0");
-                sym!(cu_mem_alloc, b"cuMemAlloc_v2\0");
-                sym!(cu_mem_free, b"cuMemFree_v2\0");
-                sym!(cu_memcpy_htod, b"cuMemcpyHtoD_v2\0");
-                sym!(cu_memcpy_dtoh, b"cuMemcpyDtoH_v2\0");
-                sym!(cu_module_load, b"cuModuleLoad\0");
-                sym!(cu_module_get_function, b"cuModuleGetFunction\0");
-                sym!(cu_launch_kernel, b"cuLaunchKernel\0");
-                sym!(cu_mem_get_info, b"cuMemGetInfo_v2\0");
-
-                Ok(CudaDriver {
-                    _lib: lib,
-                    cu_init,
-                    cu_device_get,
-                    cu_device_get_count,
-                    cu_device_get_name,
-                    cu_ctx_create,
-                    cu_ctx_destroy,
-                    cu_stream_create,
-                    cu_stream_destroy,
-                    cu_stream_synchronize,
-                    cu_mem_alloc,
-                    cu_mem_free,
-                    cu_memcpy_htod,
-                    cu_memcpy_dtoh,
-                    cu_module_load,
-                    cu_module_get_function,
-                    cu_launch_kernel,
-                    cu_mem_get_info,
-                })
+            macro_rules! sym {
+                ($name:ident, $sym:expr) => {
+                    let $name = *lib
+                        .get::<unsafe extern "C" fn() -> CuResult>($sym)
+                        .map_err(|e| format!("symbol {} not found: {}", stringify!($name), e))?;
+                    #[allow(clippy::transmute_ptr_to_ptr)]
+                    let $name = std::mem::transmute($name);
+                };
             }
+
+            sym!(cu_init, b"cuInit\0");
+            sym!(cu_device_get, b"cuDeviceGet\0");
+            sym!(cu_device_get_count, b"cuDeviceGetCount\0");
+            sym!(cu_device_get_name, b"cuDeviceGetName\0");
+            sym!(cu_ctx_create, b"cuCtxCreate_v2\0");
+            sym!(cu_ctx_destroy, b"cuCtxDestroy_v2\0");
+            sym!(cu_stream_create, b"cuStreamCreate\0");
+            sym!(cu_stream_destroy, b"cuStreamDestroy_v2\0");
+            sym!(cu_stream_synchronize, b"cuStreamSynchronize\0");
+            sym!(cu_mem_alloc, b"cuMemAlloc_v2\0");
+            sym!(cu_mem_free, b"cuMemFree_v2\0");
+            sym!(cu_memcpy_htod, b"cuMemcpyHtoD_v2\0");
+            sym!(cu_memcpy_dtoh, b"cuMemcpyDtoH_v2\0");
+            sym!(cu_module_load, b"cuModuleLoad\0");
+            sym!(cu_module_get_function, b"cuModuleGetFunction\0");
+            sym!(cu_launch_kernel, b"cuLaunchKernel\0");
+            sym!(cu_mem_get_info, b"cuMemGetInfo_v2\0");
+
+            Ok(CudaDriver {
+                _lib: lib,
+                cu_init,
+                cu_device_get,
+                cu_device_get_count,
+                cu_device_get_name,
+                cu_ctx_create,
+                cu_ctx_destroy,
+                cu_stream_create,
+                cu_stream_destroy,
+                cu_stream_synchronize,
+                cu_mem_alloc,
+                cu_mem_free,
+                cu_memcpy_htod,
+                cu_memcpy_dtoh,
+                cu_module_load,
+                cu_module_get_function,
+                cu_launch_kernel,
+                cu_mem_get_info,
+            })
         })
         .as_ref()
         .map_err(|e| HalError::BackendNotAvailable(e.clone()))
@@ -125,7 +128,10 @@ fn check_cu(ret: CuResult, op: &str) -> HalResult<()> {
     if ret == CUDA_SUCCESS {
         Ok(())
     } else {
-        Err(HalError::RuntimeError(format!("{} failed: error {}", op, ret)))
+        Err(HalError::RuntimeError(format!(
+            "{} failed: error {}",
+            op, ret
+        )))
     }
 }
 
@@ -139,7 +145,10 @@ impl CudaStream {
     fn new() -> HalResult<Self> {
         let drv = cuda_driver()?;
         let mut raw: CuStream = std::ptr::null_mut();
-        check_cu(unsafe { (drv.cu_stream_create)(&mut raw, 0) }, "cuStreamCreate")?;
+        check_cu(
+            unsafe { (drv.cu_stream_create)(&mut raw, 0) },
+            "cuStreamCreate",
+        )?;
         Ok(Self { raw })
     }
 
@@ -151,7 +160,10 @@ impl CudaStream {
 impl Stream for CudaStream {
     fn synchronize(&self) -> HalResult<()> {
         let drv = cuda_driver()?;
-        check_cu(unsafe { (drv.cu_stream_synchronize)(self.raw) }, "cuStreamSynchronize")
+        check_cu(
+            unsafe { (drv.cu_stream_synchronize)(self.raw) },
+            "cuStreamSynchronize",
+        )
     }
 }
 
@@ -160,7 +172,9 @@ unsafe impl Send for CudaStream {}
 impl Drop for CudaStream {
     fn drop(&mut self) {
         if let Ok(drv) = cuda_driver() {
-            unsafe { (drv.cu_stream_destroy)(self.raw); }
+            unsafe {
+                (drv.cu_stream_destroy)(self.raw);
+            }
         }
     }
 }
@@ -192,7 +206,13 @@ impl<T: DeviceRepr> crate::buffer::DeviceBuffer<T> for CudaBuffer<T> {
         let mut dst = vec![unsafe { std::mem::zeroed::<T>() }; self.count];
         let size = self.count * std::mem::size_of::<T>();
         check_cu(
-            unsafe { (drv.cu_memcpy_dtoh)(dst.as_mut_ptr() as *mut c_void, self.ptr as *const c_void, size) },
+            unsafe {
+                (drv.cu_memcpy_dtoh)(
+                    dst.as_mut_ptr() as *mut c_void,
+                    self.ptr as *const c_void,
+                    size,
+                )
+            },
             "cuMemcpyDtoH",
         )?;
         Ok(dst)
@@ -212,7 +232,9 @@ unsafe impl<T: DeviceRepr> Send for CudaBuffer<T> {}
 impl<T: DeviceRepr> Drop for CudaBuffer<T> {
     fn drop(&mut self) {
         if let Ok(drv) = cuda_driver() {
-            unsafe { (drv.cu_mem_free)(self.ptr); }
+            unsafe {
+                (drv.cu_mem_free)(self.ptr);
+            }
         }
     }
 }
@@ -230,9 +252,8 @@ impl KernelLauncher for CudaLauncher {
 
     fn load(&mut self, path: &Path, _mode: KernelMode) -> HalResult<()> {
         let drv = cuda_driver()?;
-        let path_cstr = CString::new(path.to_str().unwrap_or("")).map_err(|_| {
-            HalError::KernelError("invalid path".into())
-        })?;
+        let path_cstr = CString::new(path.to_str().unwrap_or(""))
+            .map_err(|_| HalError::KernelError("invalid path".into()))?;
         let mut module: CuModule = std::ptr::null_mut();
         check_cu(
             unsafe { (drv.cu_module_load)(&mut module, path_cstr.as_ptr() as *const u8) },
@@ -253,17 +274,12 @@ impl KernelLauncher for CudaLauncher {
         let module = self
             .module
             .ok_or_else(|| HalError::KernelError("no module loaded".into()))?;
-        let name_cstr = CString::new(name).map_err(|_| {
-            HalError::KernelError("invalid kernel name".into())
-        })?;
+        let name_cstr =
+            CString::new(name).map_err(|_| HalError::KernelError("invalid kernel name".into()))?;
         let mut func: CuFunction = std::ptr::null_mut();
         check_cu(
             unsafe {
-                (drv.cu_module_get_function)(
-                    &mut func,
-                    module,
-                    name_cstr.as_ptr() as *const u8,
-                )
+                (drv.cu_module_get_function)(&mut func, module, name_cstr.as_ptr() as *const u8)
             },
             "cuModuleGetFunction",
         )?;
@@ -349,10 +365,7 @@ impl Device for CudaDevice {
         let drv = cuda_driver()?;
         let mut ptr: *mut c_void = std::ptr::null_mut();
         let size = count * std::mem::size_of::<T>();
-        check_cu(
-            unsafe { (drv.cu_mem_alloc)(&mut ptr, size) },
-            "cuMemAlloc",
-        )?;
+        check_cu(unsafe { (drv.cu_mem_alloc)(&mut ptr, size) }, "cuMemAlloc")?;
         Ok(CudaBuffer {
             ptr,
             count,
@@ -411,7 +424,9 @@ unsafe impl Sync for CudaDevice {}
 impl Drop for CudaDevice {
     fn drop(&mut self) {
         if let Ok(drv) = cuda_driver() {
-            unsafe { (drv.cu_ctx_destroy)(self.ctx); }
+            unsafe {
+                (drv.cu_ctx_destroy)(self.ctx);
+            }
         }
     }
 }

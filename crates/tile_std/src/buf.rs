@@ -87,7 +87,10 @@ impl<'a, const CAP: usize, T> DmaPending<'a, CAP, T> {
     #[inline(always)]
     pub fn sync(self) -> UbView<'a, CAP, T> {
         unsafe { crate::__tile_pipe_barrier() };
-        UbView { buf: self.buf, _brand: PhantomData }
+        UbView {
+            buf: self.buf,
+            _brand: PhantomData,
+        }
     }
 }
 
@@ -103,7 +106,9 @@ impl<'a> UbCtx<'a> {
     /// Must be called from a kernel body (so the UB allocator is valid).
     #[inline(always)]
     pub unsafe fn new() -> Self {
-        Self { _brand: PhantomData }
+        Self {
+            _brand: PhantomData,
+        }
     }
 
     /// Allocate a fresh UB view of compile-time capacity `CAP`.
@@ -114,7 +119,10 @@ impl<'a> UbCtx<'a> {
     #[inline(always)]
     pub fn alloc<const CAP: usize, T>(&'a self) -> UbView<'a, CAP, T> {
         let buf = unsafe { crate::__tile_buf_alloc(CAP as u32) };
-        UbView { buf, _brand: PhantomData }
+        UbView {
+            buf,
+            _brand: PhantomData,
+        }
     }
 }
 
@@ -136,7 +144,10 @@ pub fn ub_load_f32<'a, const CAP: usize>(
 ) -> DmaPending<'a, CAP, f32> {
     let buf = unsafe { crate::__tile_buf_alloc(CAP as u32) };
     unsafe { crate::__tile_buf_load_f32(buf, gm, len) };
-    DmaPending { buf, _brand: PhantomData }
+    DmaPending {
+        buf,
+        _brand: PhantomData,
+    }
 }
 
 /// DMA-load `len` f16 elements (as `u16`) from `gm`.
@@ -148,7 +159,10 @@ pub fn ub_load_f16<'a, const CAP: usize>(
 ) -> DmaPending<'a, CAP, u16> {
     let buf = unsafe { crate::__tile_buf_alloc(CAP as u32) };
     unsafe { crate::__tile_buf_load_f16(buf, gm, len) };
-    DmaPending { buf, _brand: PhantomData }
+    DmaPending {
+        buf,
+        _brand: PhantomData,
+    }
 }
 
 /// DMA-load `len` bf16 elements (as `u16`) from `gm`.
@@ -160,7 +174,10 @@ pub fn ub_load_bf16<'a, const CAP: usize>(
 ) -> DmaPending<'a, CAP, u16> {
     let buf = unsafe { crate::__tile_buf_alloc(CAP as u32) };
     unsafe { crate::__tile_buf_load_bf16(buf, gm, len) };
-    DmaPending { buf, _brand: PhantomData }
+    DmaPending {
+        buf,
+        _brand: PhantomData,
+    }
 }
 
 // =============================================================================
@@ -169,11 +186,7 @@ pub fn ub_load_bf16<'a, const CAP: usize>(
 
 /// DMA-store the first `len` f32 elements of `src` to `gm`.
 #[inline(always)]
-pub fn ub_store_f32<const CAP: usize>(
-    gm: *mut f32,
-    src: &UbView<'_, CAP, f32>,
-    len: u32,
-) {
+pub fn ub_store_f32<const CAP: usize>(gm: *mut f32, src: &UbView<'_, CAP, f32>, len: u32) {
     unsafe {
         crate::__tile_pipe_barrier();
         crate::__tile_buf_store_f32(gm, src.buf, len);
@@ -182,11 +195,7 @@ pub fn ub_store_f32<const CAP: usize>(
 
 /// DMA-store the first `len` f16 elements of `src` to `gm`.
 #[inline(always)]
-pub fn ub_store_f16<const CAP: usize>(
-    gm: *mut u16,
-    src: &UbView<'_, CAP, u16>,
-    len: u32,
-) {
+pub fn ub_store_f16<const CAP: usize>(gm: *mut u16, src: &UbView<'_, CAP, u16>, len: u32) {
     unsafe {
         crate::__tile_pipe_barrier();
         crate::__tile_buf_store_f16(gm, src.buf, len);
@@ -195,11 +204,7 @@ pub fn ub_store_f16<const CAP: usize>(
 
 /// DMA-store the first `len` bf16 elements of `src` to `gm`.
 #[inline(always)]
-pub fn ub_store_bf16<const CAP: usize>(
-    gm: *mut u16,
-    src: &UbView<'_, CAP, u16>,
-    len: u32,
-) {
+pub fn ub_store_bf16<const CAP: usize>(gm: *mut u16, src: &UbView<'_, CAP, u16>, len: u32) {
     unsafe {
         crate::__tile_pipe_barrier();
         crate::__tile_buf_store_bf16(gm, src.buf, len);
@@ -211,29 +216,17 @@ pub fn ub_store_bf16<const CAP: usize>(
 // =============================================================================
 
 #[inline(always)]
-pub fn ub_fill_f32<const CAP: usize>(
-    dst: &UbView<'_, CAP, f32>,
-    val: f32,
-    len: u32,
-) {
+pub fn ub_fill_f32<const CAP: usize>(dst: &UbView<'_, CAP, f32>, val: f32, len: u32) {
     unsafe { crate::__tile_buf_fill_f32(dst.buf, val, len) }
 }
 
 #[inline(always)]
-pub fn ub_fill_f16<const CAP: usize>(
-    dst: &UbView<'_, CAP, u16>,
-    val: f32,
-    len: u32,
-) {
+pub fn ub_fill_f16<const CAP: usize>(dst: &UbView<'_, CAP, u16>, val: f32, len: u32) {
     unsafe { crate::__tile_buf_fill_f16(dst.buf, val, len) }
 }
 
 #[inline(always)]
-pub fn ub_fill_bf16<const CAP: usize>(
-    dst: &UbView<'_, CAP, u16>,
-    val: f32,
-    len: u32,
-) {
+pub fn ub_fill_bf16<const CAP: usize>(dst: &UbView<'_, CAP, u16>, val: f32, len: u32) {
     unsafe { crate::__tile_buf_fill_bf16(dst.buf, val, len) }
 }
 
@@ -746,20 +739,12 @@ pub fn ub_cast_f32_to_f16<const CAP: usize>(
 // =============================================================================
 
 #[inline(always)]
-pub fn ub_duplicate_f32<const CAP: usize>(
-    dst: &UbView<'_, CAP, f32>,
-    scalar: f32,
-    len: u32,
-) {
+pub fn ub_duplicate_f32<const CAP: usize>(dst: &UbView<'_, CAP, f32>, scalar: f32, len: u32) {
     unsafe { crate::__tile_duplicate_f32(dst.buf, scalar, len) }
 }
 
 #[inline(always)]
-pub fn ub_duplicate_f16<const CAP: usize>(
-    dst: &UbView<'_, CAP, u16>,
-    scalar: f32,
-    len: u32,
-) {
+pub fn ub_duplicate_f16<const CAP: usize>(dst: &UbView<'_, CAP, u16>, scalar: f32, len: u32) {
     unsafe { crate::__tile_duplicate_f16(dst.buf, scalar, len) }
 }
 
@@ -768,18 +753,11 @@ pub fn ub_duplicate_f16<const CAP: usize>(
 // =============================================================================
 
 #[inline(always)]
-pub fn ub_get_value_f32<const CAP: usize>(
-    src: &UbView<'_, CAP, f32>,
-    idx: u32,
-) -> f32 {
+pub fn ub_get_value_f32<const CAP: usize>(src: &UbView<'_, CAP, f32>, idx: u32) -> f32 {
     unsafe { crate::__tile_get_value_f32(src.buf, idx) }
 }
 
 #[inline(always)]
-pub fn ub_set_value_f32<const CAP: usize>(
-    dst: &UbView<'_, CAP, f32>,
-    idx: u32,
-    val: f32,
-) {
+pub fn ub_set_value_f32<const CAP: usize>(dst: &UbView<'_, CAP, f32>, idx: u32, val: f32) {
     unsafe { crate::__tile_set_value_f32(dst.buf, idx, val) }
 }

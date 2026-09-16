@@ -1,0 +1,15 @@
+[package]
+name = "ascend_sys"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+default = ["dvpp", "blas", "hccl", "profiler"]
+dvpp = []
+blas = []
+hccl = []
+profiler = []
+
+[build-dependencies]
+bindgen = "0.71.1"
+tile_kernel_builder_config = { path = "../tile_kernel_builder_config" }
