@@ -15,6 +15,7 @@ fn main() {
     println!("cargo::rustc-check-cfg=cfg(rustc_float_intrinsics_safe)");
     println!("cargo::rustc-check-cfg=cfg(rustc_1_99_core)");
     println!("cargo::rustc-check-cfg=cfg(rustc_fabsf32_removed)");
+    println!("cargo::rustc-check-cfg=cfg(rustc_float_math_generic)");
 
     // The `fabsf32` intrinsic was removed earlier than the rest of the 1.99 churn:
     // present on 2026-03-01, gone by 2026-04-01. Gate at 2026-03-15. It is unused
@@ -42,6 +43,16 @@ fn main() {
     let float_intrinsics_safe = matches!(date, Some(d) if d >= (2025, 9, 1));
     if float_intrinsics_safe {
         println!("cargo::rustc-cfg=rustc_float_intrinsics_safe");
+    }
+
+    // `expf32`/`logf32` (and sin, cos, exp2, log2, log10) became generic
+    // `exp<T>`/`log<T>` intrinsics over a `FloatPrimitive` bound in rust-lang/rust
+    // #162117, merged 2026-09-01 15:38 UTC. A nightly whose commit date is
+    // 2026-09-01 may predate the merge, so gate at 2026-09-02. They are unused
+    // here, so they are omitted rather than ported to the generic form.
+    let float_math_generic = matches!(date, Some(d) if d >= (2026, 9, 2));
+    if float_math_generic {
+        println!("cargo::rustc-cfg=rustc_float_math_generic");
     }
 
     // The `#[rustc_do_not_implement_via_object]` marker attribute was renamed to
