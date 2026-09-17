@@ -250,15 +250,7 @@ enum KernelType {
     Dsv4MoeSwigluWeight, // DS4 dsv4_moe_swiglu_weight: per-row mid = silu(clamp(gate)) * clamp(up) * w[0]; optional clamp writeback.
     Dsv4MoeSwigluWeightF16, // DS4 dsv4_moe_swiglu_weight_f16: same as M46 but mid is half-precision.
     Dsv4MulMmIdMap0, // DS4 mul_mm_id_map0: per-expert ID-map builder; specialized on ne20=8 fanout.
-    Dsv4MulMmIdMap0Ne20_8Full, // DS4 kernel_mul_mm_id_map0_ne20_8 M136 (moe.metal:1510): host-callable full ne20=8 fanout sibling of Dsv4MulMmIdMap0. 3 char* bufs (src2 const, htpe writable, hids writable). 8 uniforms (ne02 i32, ne10 i32, ne11 i32, nb11 u64, nb12 u64, ne21 i32, ne20 i32, nb21 u64).
-    Dsv4MulMmIdMap0Ne20_4Full, // DS4 kernel_mul_mm_id_map0_ne20_4 M137: same shell as Ne20_8Full with NE20=4 baked.
-    Dsv4MulMmIdMap0Ne20_1Full, // DS4 kernel_mul_mm_id_map0_ne20_1 M138: NE20=1 baked.
-    Dsv4MulMmIdMap0Ne20_2Full, // DS4 kernel_mul_mm_id_map0_ne20_2 M139: NE20=2 baked.
-    Dsv4MulMmIdMap0Ne20_5Full, // DS4 kernel_mul_mm_id_map0_ne20_5 M140: NE20=5 baked.
-    Dsv4MulMmIdMap0Ne20_6Full, // DS4 kernel_mul_mm_id_map0_ne20_6 M141: NE20=6 baked.
-    Dsv4MulMmIdMap0Ne20_10Full, // DS4 kernel_mul_mm_id_map0_ne20_10 M142: NE20=10 baked.
-    Dsv4MulMmIdMap0Ne20_16Full, // DS4 kernel_mul_mm_id_map0_ne20_16 M143: NE20=16 baked.
-    Dsv4MulMmIdMap0Ne20_22Full, // DS4 kernel_mul_mm_id_map0_ne20_22 M144: NE20=22 baked.
+    Dsv4MulMmIdMap0Full, // DS4 kernel_mul_mm_id_map0_ne20_N (moe.metal:1510): per-expert ID map with the fan-out ne20 and expert capacity taken from the call. 3 char* bufs (src2 const, htpe writable, hids writable). 8 uniforms (ne02 i32, ne10 i32, ne11 i32, nb11 u64, nb12 u64, ne21 i32, ne20 i32, nb21 u64).
     Dsv4QkvRmsNormF32_4, // DS4 dsv4_qkv_rms_norm_f32_4: q-lora row + KV row RMSNorm in one dispatch (float4-vectorized).
     RmsNormMulF32_4, // DS4 kernel_rms_norm_mul_f32_4: per-row float4 RMSNorm × learned weight; 3D dispatch over (i01, i02, i03).
     RmsNormF32_4, // DS4 kernel_rms_norm_f32_4: per-row float4 plain RMSNorm (F=1 of fuse_impl); 2 char* bufs (src, dst).
@@ -1346,6 +1338,7 @@ const KNOWN_INTRINSICS: &[&str] = &[
     "__tile_mul_mm_id_iq2_xxs_f16",
     "__tile_mul_mm_id_iq2_xxs_f32",
     "__tile_mul_mm_id_map0_f32",
+    "__tile_mul_mm_id_map0_full",
     "__tile_mul_mm_id_map0_ne20_10_full",
     "__tile_mul_mm_id_map0_ne20_16_full",
     "__tile_mul_mm_id_map0_ne20_1_full",
@@ -1986,15 +1979,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4MoeSwigluWeight => 4, // gate (char*), up (char*), mid (char*), weights (char* const)
         KernelType::Dsv4MoeSwigluWeightF16 => 4, // same; body casts mid to half on write
         KernelType::Dsv4MulMmIdMap0 => 3,     // src2 (char* const), htpe (char*), hids (char*)
-        KernelType::Dsv4MulMmIdMap0Ne20_8Full => 3, // M136: src2 (char* const), htpe (char* writable), hids (char* writable)
-        KernelType::Dsv4MulMmIdMap0Ne20_4Full => 3, // M137
-        KernelType::Dsv4MulMmIdMap0Ne20_1Full => 3, // M138
-        KernelType::Dsv4MulMmIdMap0Ne20_2Full => 3, // M139
-        KernelType::Dsv4MulMmIdMap0Ne20_5Full => 3, // M140
-        KernelType::Dsv4MulMmIdMap0Ne20_6Full => 3, // M141
-        KernelType::Dsv4MulMmIdMap0Ne20_10Full => 3, // M142
-        KernelType::Dsv4MulMmIdMap0Ne20_16Full => 3, // M143
-        KernelType::Dsv4MulMmIdMap0Ne20_22Full => 3, // M144
+        KernelType::Dsv4MulMmIdMap0Full => 3, // M136: src2 (char* const), htpe (char* writable), hids (char* writable)
         KernelType::Dsv4QkvRmsNormF32_4 => 6, // q_src,q_w (const), q_dst, kv_src,kv_w (const), kv_dst
         KernelType::RmsNormMulF32_4 => 3, // src (char* const), weight (char* const), dst (char*)
         KernelType::RmsNormF32_4 => 2,    // src (char* const), dst (char*)
@@ -2272,15 +2257,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             | KernelType::Dsv4MoeSwigluWeight
             | KernelType::Dsv4MoeSwigluWeightF16
             | KernelType::Dsv4MulMmIdMap0
-            | KernelType::Dsv4MulMmIdMap0Ne20_8Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_4Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_1Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_2Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_5Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_6Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_10Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_16Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_22Full
+            | KernelType::Dsv4MulMmIdMap0Full
             | KernelType::Dsv4QkvRmsNormF32_4
             | KernelType::RmsNormMulF32_4
             | KernelType::Dsv4SoftplusSqrtF32_4
@@ -2455,15 +2432,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
     let is_mul_mm_id_map0 = matches!(
         ctx.kernel_type,
         KernelType::Dsv4MulMmIdMap0
-            | KernelType::Dsv4MulMmIdMap0Ne20_8Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_4Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_1Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_2Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_5Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_6Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_10Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_16Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_22Full
+            | KernelType::Dsv4MulMmIdMap0Full
     );
     // qkv_rms_norm_f32_4: p0=q_src,p1=q_w (const), p2=q_dst (writable), p3=kv_src,p4=kv_w (const), p5=kv_dst (writable).
     let is_qkv_rms_norm = matches!(ctx.kernel_type, KernelType::Dsv4QkvRmsNormF32_4);
@@ -4954,15 +4923,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             )
             .unwrap();
         }
-        KernelType::Dsv4MulMmIdMap0Ne20_8Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_4Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_1Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_2Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_5Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_6Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_10Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_16Full
-        | KernelType::Dsv4MulMmIdMap0Ne20_22Full => {
+        KernelType::Dsv4MulMmIdMap0Full => {
             // M136/M137: kernel_mul_mm_id_map0_ne20_{8,4} full host_name surface,
             // matching antirez ds4_metal_args_mul_mm_id_map0 (8 fields). Body only
             // reads ne20, ne21, nb21; the rest are surface-compatibility ballast.
@@ -8473,15 +8434,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             | KernelType::Dsv4MoeSwigluWeight
             | KernelType::Dsv4MoeSwigluWeightF16
             | KernelType::Dsv4MulMmIdMap0
-            | KernelType::Dsv4MulMmIdMap0Ne20_8Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_4Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_1Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_2Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_5Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_6Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_10Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_16Full
-            | KernelType::Dsv4MulMmIdMap0Ne20_22Full
+            | KernelType::Dsv4MulMmIdMap0Full
             | KernelType::Dsv4QkvRmsNormF32_4
             | KernelType::RmsNormMulF32_4
             | KernelType::RmsNormF32_4
@@ -8833,15 +8786,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4MoeSwigluWeight => emit_dsv4_moe_swiglu_weight_msl(out, false),
         KernelType::Dsv4MoeSwigluWeightF16 => emit_dsv4_moe_swiglu_weight_msl(out, true),
         KernelType::Dsv4MulMmIdMap0 => emit_dsv4_mul_mm_id_map0_msl(out),
-        KernelType::Dsv4MulMmIdMap0Ne20_8Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 8),
-        KernelType::Dsv4MulMmIdMap0Ne20_4Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 4),
-        KernelType::Dsv4MulMmIdMap0Ne20_1Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 1),
-        KernelType::Dsv4MulMmIdMap0Ne20_2Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 2),
-        KernelType::Dsv4MulMmIdMap0Ne20_5Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 5),
-        KernelType::Dsv4MulMmIdMap0Ne20_6Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 6),
-        KernelType::Dsv4MulMmIdMap0Ne20_10Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 10),
-        KernelType::Dsv4MulMmIdMap0Ne20_16Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 16),
-        KernelType::Dsv4MulMmIdMap0Ne20_22Full => emit_dsv4_mul_mm_id_map0_neN_full_msl(out, 22),
+        KernelType::Dsv4MulMmIdMap0Full => {
+            let (ne20, max_experts) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => return Err("mul_mm_id_map0_full: fan-out was not recorded".into()),
+            };
+            check_mul_mm_id_map0_shape(ne20, max_experts)?;
+            emit_dsv4_mul_mm_id_map0_neN_full_msl(out, ne20, max_experts)
+        }
         KernelType::Dsv4QkvRmsNormF32_4 => emit_dsv4_qkv_rms_norm_f32_4_msl(out),
         KernelType::RmsNormMulF32_4 => emit_rms_norm_fuse_f32_4_msl(out, true),
         KernelType::RmsNormF32_4 => emit_rms_norm_fuse_f32_4_msl(out, false),
@@ -10060,6 +10012,51 @@ fn trailing_shape_operands(
         .map(Some)
 }
 
+/// Read the fan-out and expert capacity of a `__tile_mul_mm_id_map0_*full` call.
+///
+/// Operand 9 is `ne20`, the experts selected per token, which sizes the kernel's
+/// staging and so must be a constant. The generic `__tile_mul_mm_id_map0_full`
+/// takes it from there; the `_ne20_<N>_full` names also carry it, and a call
+/// whose operand disagrees with its name is refused. An optional twelfth
+/// operand is the expert capacity (threads per group, default 256).
+fn mul_mm_id_map0_shape(callee: &str, args: &[String], ctx: &MslContext) -> Result<Option<Vec<u32>>, String> {
+    if !(11..=12).contains(&args.len()) {
+        return Err(format!("{callee}: expected 11 operands, or 12 with max_experts; got {}", args.len()));
+    }
+    let ne20 = ctx.resolve_const(args[9].trim());
+    let named = callee
+        .strip_prefix("__tile_mul_mm_id_map0_ne20_")
+        .and_then(|rest| rest.strip_suffix("_full"))
+        .map(|n| n.parse::<u32>().expect("ne20 in intrinsic name"));
+    let ne20 = match (named, ne20) {
+        (Some(n), 0) => n,
+        (Some(n), v) if v != n => {
+            return Err(format!("{callee}: operand 9 (ne20) is {v}, but the intrinsic name says {n}"))
+        }
+        (_, 0) => {
+            return Err(format!(
+                "{callee}: operand 9 (ne20) must be a positive integer constant, got `{}`",
+                args[9].trim()
+            ))
+        }
+        (_, v) => v,
+    };
+    let max_experts = if args.len() == 12 {
+        match ctx.resolve_const(args[11].trim()) {
+            0 => {
+                return Err(format!(
+                    "{callee}: operand 11 (max_experts) must be a positive integer constant, got `{}`",
+                    args[11].trim()
+                ))
+            }
+            v => v,
+        }
+    } else {
+        MUL_MM_ID_MAP0_DS4_MAX_EXPERTS
+    };
+    Ok(Some(vec![ne20, max_experts]))
+}
+
 /// The shape operands recorded for the kernel being emitted.
 fn recorded_shape(ctx: &MslContext) -> Result<Option<Vec<u32>>, String> {
     ctx.shape_operands.clone().unwrap_or(Ok(None))
@@ -10799,49 +10796,19 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                         ctx.kernel_type = KernelType::Dsv4MulMmIdMap0;
                     }
                 }
-                "__tile_mul_mm_id_map0_ne20_8_full" => {
+                "__tile_mul_mm_id_map0_full"
+                | "__tile_mul_mm_id_map0_ne20_1_full"
+                | "__tile_mul_mm_id_map0_ne20_2_full"
+                | "__tile_mul_mm_id_map0_ne20_4_full"
+                | "__tile_mul_mm_id_map0_ne20_5_full"
+                | "__tile_mul_mm_id_map0_ne20_6_full"
+                | "__tile_mul_mm_id_map0_ne20_8_full"
+                | "__tile_mul_mm_id_map0_ne20_10_full"
+                | "__tile_mul_mm_id_map0_ne20_16_full"
+                | "__tile_mul_mm_id_map0_ne20_22_full" => {
                     if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_8Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_4_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_4Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_1_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_1Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_2_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_2Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_5_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_5Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_6_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_6Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_10_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_10Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_16_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_16Full;
-                    }
-                }
-                "__tile_mul_mm_id_map0_ne20_22_full" => {
-                    if ctx.kernel_type == KernelType::Copy {
-                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Ne20_22Full;
+                        ctx.kernel_type = KernelType::Dsv4MulMmIdMap0Full;
+                        ctx.shape_operands = Some(mul_mm_id_map0_shape(&callee, &args, ctx));
                     }
                 }
                 "__tile_qkv_rms_norm_f32_4" => {
@@ -14997,14 +14964,15 @@ fn emit_dsv4_moe_swiglu_weight_msl(out: &mut String, mid_is_half: bool) {
     writeln!(out, "    }}").unwrap();
 }
 
-/// Dsv4MulMmIdMap0Ne20_{N}Full (M136/M137): host-callable full-surface sibling of
-/// Dsv4MulMmIdMap0 matching antirez kernel_mul_mm_id_map0_ne20_N (moe.metal:1510,
-/// template ne20=N). Same body as the runtime-ne20 emitter but with ne20 baked
-/// as a constexpr (matches the antirez template parameter); ne02, ne10, ne11,
-/// nb11, nb12 are surface-compat ballast and unused in the body.
-fn emit_dsv4_mul_mm_id_map0_neN_full_msl(out: &mut String, ne20: u32) {
+/// Dsv4MulMmIdMap0Full: host-callable full-surface sibling of Dsv4MulMmIdMap0
+/// matching antirez kernel_mul_mm_id_map0_ne20_N (moe.metal:1510, template
+/// ne20=N). Same body as the runtime-ne20 emitter but with ne20 baked as a
+/// constexpr, taken from the call; `max_experts` sizes the per-thread staging
+/// (one thread per expert). ne02, ne10, ne11, nb11, nb12 are surface-compat
+/// ballast and unused in the body.
+fn emit_dsv4_mul_mm_id_map0_neN_full_msl(out: &mut String, ne20: u32, max_experts: u32) {
     writeln!(out, "    constexpr short NE20 = {};", ne20).unwrap();
-    writeln!(out, "    threadgroup uint16_t shmem_ids[256 * {}];", ne20).unwrap();
+    writeln!(out, "    threadgroup uint16_t shmem_ids[{} * {}];", max_experts, ne20).unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const uint ide = tid;").unwrap();
     writeln!(out, "    uint n_all = 0;").unwrap();
@@ -15072,6 +15040,26 @@ fn emit_dsv4_mul_mm_id_map0_neN_full_msl(out: &mut String, ne20: u32) {
         "    (void)ne02; (void)ne10; (void)ne11; (void)nb11; (void)nb12; (void)ne20;"
     )
     .unwrap();
+}
+
+/// Expert capacity the DeepSeek-V4 MoE uses: one thread per expert.
+const MUL_MM_ID_MAP0_DS4_MAX_EXPERTS: u32 = 256;
+
+/// Why a map0 shape cannot be emitted, if it cannot. One thread runs per expert
+/// and stages one token row of `ne20` ids, in `max_experts * ne20` uint16 slots.
+fn check_mul_mm_id_map0_shape(ne20: u32, max_experts: u32) -> Result<(), String> {
+    if !(1..=1024).contains(&max_experts) {
+        return Err(format!(
+            "mul_mm_id_map0_full: max_experts {max_experts} must be from 1 to 1024 (one thread per expert)"
+        ));
+    }
+    if 2 * max_experts * ne20 > 32768 {
+        return Err(format!(
+            "mul_mm_id_map0_full: {max_experts} experts x ne20 {ne20} stage {} bytes, past the 32768 of threadgroup memory Metal allows",
+            2 * max_experts * ne20
+        ));
+    }
+    Ok(())
 }
 
 /// RmsNormF32_4 / RmsNormMulF32_4: float4-vectorized RMSNorm, optionally
@@ -26666,12 +26654,12 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_dsv4_mul_mm_id_map0_neN_full_msl() {
         check(
-            |o| emit_dsv4_mul_mm_id_map0_neN_full_msl(o, 2u32),
+            |o| emit_dsv4_mul_mm_id_map0_neN_full_msl(o, 2u32, 256u32),
             "device const int * src2_i32 = (device const int *) (p0 + (uint64_t)(i21 + tid) * (uint64_t)nb21);",
             "emit_dsv4_mul_mm_id_map0_neN_full_msl",
         );
         check(
-            |o| emit_dsv4_mul_mm_id_map0_neN_full_msl(o, 4u32),
+            |o| emit_dsv4_mul_mm_id_map0_neN_full_msl(o, 4u32, 256u32),
             "",
             "emit_dsv4_mul_mm_id_map0_neN_full_msl#v0",
         );

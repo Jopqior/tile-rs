@@ -1187,6 +1187,33 @@ extern "C" {
         nb21: u32,
     ) -> u32;
 
+    /// DS4 per-expert MoE ID map with the host_name surface of antirez
+    /// kernel_mul_mm_id_map0_ne20_N. For each expert (one thread each), lists the
+    /// flat slot `row * ne20 + i` of every token row that selected it, and counts
+    /// them. 3 char* bufs: src2 (const, ne21 rows of ne20 int32 ids), htpe
+    /// (writable, uint per expert), hids (writable, ne21 ints per expert).
+    ///
+    /// `ne20` must be a compile-time constant: it sizes the staging. Optional
+    /// trailing `max_experts` (default 256) is the thread count per group, one per
+    /// expert; `2 * max_experts * ne20` must fit Metal's 32768 bytes of threadgroup
+    /// memory. Dispatch one threadgroup of `max_experts` threads. The
+    /// `__tile_mul_mm_id_map0_ne20_<N>_full` intrinsics below are this one with
+    /// `ne20` fixed by name.
+    pub fn __tile_mul_mm_id_map0_full(
+        src2: u32,
+        htpe: u32,
+        hids: u32,
+        ne02: u32,
+        ne10: u32,
+        ne11: u32,
+        nb11: u32,
+        nb12: u32,
+        ne21: u32,
+        ne20: u32,
+        nb21: u32,
+        max_experts: u32,
+    ) -> u32;
+
     /// DS4 kernel_mul_mm_id_map0_ne20_8 M136 (moe.metal:1510): full host_name
     /// surface for ne20=8 template instantiation of kernel_mul_mm_id_map0.
     /// 3 char* bufs (src2 const, htpe writable, hids writable). 8 uniforms
