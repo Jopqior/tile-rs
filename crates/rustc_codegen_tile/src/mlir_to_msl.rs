@@ -861,7 +861,7 @@ pub(crate) const LAGUNA_KERNELS: &[LagunaEmitter] = &[
     ("laguna_qkvg_f16_f32", emit_laguna_qkvg_f16_f32_msl, true),
     (
         "laguna_attention_decode_gqa_f16",
-        emit_laguna_attention_decode_gqa_f16_msl,
+        |o: &mut String| emit_laguna_attention_decode_gqa_f16_msl(o, LAGUNA_DECODE_DS4_SPLIT),
         true,
     ),
 ];
@@ -8766,7 +8766,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::LagunaQ4KPairSwigluF32 => emit_laguna_q4_K_pair_swiglu_f32_msl(out),
         KernelType::LagunaAttnOutResidualF32 => emit_laguna_attn_output_residual_f32_msl(out),
         KernelType::LagunaQkvgF16F32 => emit_laguna_qkvg_f16_f32_msl(out),
-        KernelType::LagunaAttnDecodeGqaF16 => emit_laguna_attention_decode_gqa_f16_msl(out),
+        KernelType::LagunaAttnDecodeGqaF16 => {
+            let split = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => LAGUNA_DECODE_DS4_SPLIT,
+            };
+            check_laguna_decode_split(split)?;
+            emit_laguna_attention_decode_gqa_f16_msl(out, split)
+        }
         KernelType::LagunaQ2KRoutedDownF32 => emit_laguna_q2_K_routed_down_f32_msl(out),
         KernelType::LagunaQ2KPairSwigluF32 => emit_laguna_q2_K_pair_swiglu_f32_msl(out),
         KernelType::LagunaQ3KRoutedDownF32 => emit_laguna_q3_K_routed_down_f32_msl(out),
@@ -11653,6 +11660,13 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_laguna_attention_decode_gqa_f16" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::LagunaAttnDecodeGqaF16;
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            3,
+                            &["split_simd_groups"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_laguna_q2_K_routed_down_f32" => {
@@ -26971,17 +26985,17 @@ module {
     #[test]
     fn t_emit_laguna_attention_decode_gqa_f16_msl() {
         check(
-            |o| emit_laguna_attention_decode_gqa_f16_msl(o),
+            |o| emit_laguna_attention_decode_gqa_f16_msl(o, LAGUNA_DECODE_DS4_SPLIT),
             "const float score = simd_sum(partial) * scale;",
             "emit_laguna_attention_decode_gqa_f16_msl",
         );
         check(
-            |o| emit_laguna_attention_decode_gqa_f16_msl(o),
+            |o| emit_laguna_attention_decode_gqa_f16_msl(o, LAGUNA_DECODE_DS4_SPLIT),
             "const float gate_scale = gate_value > 20.0f ? gate_value : log(1.0f + exp(gate_value));",
             "emit_laguna_attention_decode_gqa_f16_msl#gate",
         );
         check(
-            |o| emit_laguna_attention_decode_gqa_f16_msl(o),
+            |o| emit_laguna_attention_decode_gqa_f16_msl(o, LAGUNA_DECODE_DS4_SPLIT),
             "const float weight = partial_sum[sg] > 0.0f ? exp(partial_max[sg] - global_max) : 0.0f;",
             "emit_laguna_attention_decode_gqa_f16_msl#split",
         );

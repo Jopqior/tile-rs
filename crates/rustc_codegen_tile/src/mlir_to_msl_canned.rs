@@ -1388,9 +1388,15 @@ pub(super) fn emit_laguna_qkvg_f16_f32_msl(out: &mut String) {
 /// Buffers: p0=q (float), p1=gate (float), p2=key_cache, p3=value_cache (half),
 /// p4=out (float). Uniforms: n_head,n_head_kv,head_dim,cache_cap,key_start,
 /// key_count,scale. head_dim==128. Grid: n_head threadgroups × 256 threads.
-pub(super) fn emit_laguna_attention_decode_gqa_f16_msl(out: &mut String) {
-    writeln!(out, "    threadgroup float scratch[8u + 8u + 8u * 128u];  // partial_max[8]+partial_sum[8]+partial_value[8*128]").unwrap();
-    writeln!(out, "    constexpr uint split_simd_groups = 8u;").unwrap();
+/// `split_simd_groups` simdgroups share the key range and merge their
+/// independently normalised partials, so it sets the thread count (32 each) and
+/// the size of the partial staging. The head dimension is not a parameter: each
+/// lane holds a float4 of the 128-wide head, and the kernel refuses any other
+/// head_dim at runtime.
+pub(super) fn emit_laguna_attention_decode_gqa_f16_msl(out: &mut String, split: u32) {
+    let discard = format!("{}/{}", split - 1, split);
+    writeln!(out, "    threadgroup float scratch[{split}u + {split}u + {split}u * 128u];  // partial_max[{split}]+partial_sum[{split}]+partial_value[{split}*128]").unwrap();
+    writeln!(out, "    constexpr uint split_simd_groups = {split}u;").unwrap();
     writeln!(out, "    const uint head = tgpig.x;").unwrap();
     writeln!(out, "    const uint lane = simd_lane;").unwrap();
     writeln!(out, "    const uint simd_group = simd_id;").unwrap();
@@ -1403,17 +1409,17 @@ pub(super) fn emit_laguna_attention_decode_gqa_f16_msl(out: &mut String) {
     writeln!(out, "    }}").unwrap();
     writeln!(
         out,
-        "    // Always distribute keys across the 8 simdgroups (flash-merge below)."
+        "    // Always distribute keys across the {split} simdgroups (flash-merge below)."
     )
     .unwrap();
     writeln!(
         out,
-        "    // The old `key_count > 256` gate made short-context DECODE run all 8"
+        "    // The old `key_count > 256` gate made short-context DECODE run all {split}"
     )
     .unwrap();
     writeln!(
         out,
-        "    // simdgroups redundantly over every key and discard 7/8 → 8x waste."
+        "    // simdgroups redundantly over every key and discard {discard} → {split}x waste."
     )
     .unwrap();
     writeln!(out, "    const bool split = true;").unwrap();
@@ -1601,20 +1607,36 @@ pub(super) fn emit_laguna_attention_decode_gqa_f16_msl(out: &mut String) {
     // writes NO output and raises NO error, so the caller silently reads whatever
     // was already in the output buffer. That reads as a bad model, not a bad launch.
     {
+        let decl = format!("threadgroup float scratch[{split}u + {split}u + {split}u * 128u];");
+        // `because` is a &'static str in the ledger, so the shipped split keeps the
+        // wording the committed contract table carries, and other splits get
+        // wording that names the parameter instead of a count.
+        let (head_dim_because, split_because): (&'static str, &'static str) = if split == LAGUNA_DECODE_DS4_SPLIT {
+            (
+                "partial_value holds exactly 8*128 floats and is indexed \
+                 simd_group*head_dim + lane + 96; a larger head_dim addresses past it, \
+                 and the kernel returns without writing rather than faulting",
+                "partial_max and partial_sum hold 8 entries each and are indexed by the \
+                 simdgroup index; a ninth simdgroup overwrites partial_sum",
+            )
+        } else {
+            (
+                "partial_value holds exactly split_simd_groups*128 floats and is indexed \
+                 simd_group*head_dim + lane + 96; a larger head_dim addresses past it, \
+                 and the kernel returns without writing rather than faulting",
+                "partial_max and partial_sum hold split_simd_groups entries each and are \
+                 indexed by the simdgroup index; one more simdgroup overwrites partial_sum",
+            )
+        };
         let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
-        k.charge_threadgroup_bytes(4160, "threadgroup float scratch[8u + 8u + 8u * 128u];");
+        k.charge_threadgroup_bytes(4 * (2 * split + split * 128), &decl);
+        k.charge_dim_bound("head_dim", 128, "partial_value", &decl, head_dim_because);
         k.charge_dim_bound(
-            "head_dim", 128, "partial_value",
-            "threadgroup float scratch[8u + 8u + 8u * 128u];",
-            "partial_value holds exactly 8*128 floats and is indexed \
-             simd_group*head_dim + lane + 96; a larger head_dim addresses past it, \
-             and the kernel returns without writing rather than faulting",
-        );
-        k.charge_dim_bound(
-            "simdgroups_per_threadgroup", 8, "partial_max",
-            "threadgroup float scratch[8u + 8u + 8u * 128u];",
-            "partial_max and partial_sum hold 8 entries each and are indexed by the \
-             simdgroup index; a ninth simdgroup overwrites partial_sum",
+            "simdgroups_per_threadgroup",
+            split,
+            "partial_max",
+            &decl,
+            split_because,
         );
         let _ = k.finish();
     }
@@ -21805,6 +21827,19 @@ pub(super) fn check_sort_capacity(kernel: &str, what: &str, capacity: u32) -> Re
     if !(2..=1024).contains(&capacity) || !capacity.is_power_of_two() {
         return Err(format!(
             "{kernel}: {what} {capacity} must be a power of two from 2 to 1024 (one thread per element, bitonic network)"
+        ));
+    }
+    Ok(())
+}
+
+/// Simdgroups the shipped Laguna decode attention splits its key range over.
+pub(super) const LAGUNA_DECODE_DS4_SPLIT: u32 = 8;
+
+/// Why a Laguna decode split cannot be emitted, if it cannot.
+pub(super) fn check_laguna_decode_split(split: u32) -> Result<(), String> {
+    if !(1..=32).contains(&split) {
+        return Err(format!(
+            "laguna_attention_decode_gqa_f16: split_simd_groups {split} must be from 1 to 32 (32 threads each, Metal allows 1024 per threadgroup)"
         ));
     }
     Ok(())
