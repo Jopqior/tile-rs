@@ -1,10 +1,10 @@
 //! The DeepSeek-V4 indexed mixed-attention kernels, emitted from their intrinsics.
 //!
-//! The one-row kernel's committed file stages Q and K as float and the current
-//! emitter defaults to half, so the shipped file is checked through the
-//! explicit stage_bits = 32 spelling; the batched kernel's default is checked
-//! directly. At other shapes, on a Metal GPU, both kernels must match a CPU
-//! reference of the same selection rules and softmax.
+//! Both kernels ship in both staging precisions, as four committed files: the
+//! one-row kernel as `_h8` (float) and `_h8_half`, the batched kernel as
+//! `_h8_rb4` (half) and `_h8_rb4_float`. Each must be reproduced byte for byte
+//! from its MLIR. At other shapes, on a Metal GPU, both kernels must match a CPU
+//! reference of the same selection rules and softmax in both precisions.
 #![cfg(feature = "emitters")]
 
 use tile_codegen::{EmitOpts, TargetRegistry};
@@ -65,6 +65,69 @@ module {
 }
 "#;
 
+const ROW_HALF_MLIR: &str = r#"
+module {
+  llvm.func @ds4_dsv4_indexed_mixed_attention_h8_half(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>, %arg4: !llvm.ptr<1>, %arg5: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %nt   = llvm.mlir.constant(2 : i32) : i32
+    %nh   = llvm.mlir.constant(8 : i32) : i32
+    %nr   = llvm.mlir.constant(4 : i32) : i32
+    %nc   = llvm.mlir.constant(8 : i32) : i32
+    %tk   = llvm.mlir.constant(4 : i32) : i32
+    %ra   = llvm.mlir.constant(4 : i32) : i32
+    %wn   = llvm.mlir.constant(0 : i32) : i32
+    %p0   = llvm.mlir.constant(8 : i32) : i32
+    %rs   = llvm.mlir.constant(0 : i32) : i32
+    %rc   = llvm.mlir.constant(16 : i32) : i32
+    %qts  = llvm.mlir.constant(16384 : i32) : i32
+    %qhs  = llvm.mlir.constant(2048 : i32) : i32
+    %rrs  = llvm.mlir.constant(2048 : i32) : i32
+    %crs  = llvm.mlir.constant(2048 : i32) : i32
+    %tts  = llvm.mlir.constant(16 : i32) : i32
+    %dts  = llvm.mlir.constant(16384 : i32) : i32
+    %dhs  = llvm.mlir.constant(2048 : i32) : i32
+    %scl  = llvm.mlir.constant(1 : i32) : i32
+    %hd   = llvm.mlir.constant(512 : i32) : i32
+    %hg   = llvm.mlir.constant(8 : i32) : i32
+    %sb   = llvm.mlir.constant(16 : i32) : i32
+    %ret  = llvm.call @__tile_indexed_mixed_attention_h8_f32(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %nt, %nh, %nr, %nc, %tk, %ra, %wn, %p0, %rs, %rc, %qts, %qhs, %rrs, %crs, %tts, %dts, %dhs, %scl, %hd, %hg, %sb) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
+    llvm.return
+  }
+}
+"#;
+
+const BATCHED_FLOAT_MLIR: &str = r#"
+module {
+  llvm.func @ds4_dsv4_indexed_mixed_attention_h8_rb4_float(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>, %arg4: !llvm.ptr<1>, %arg5: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %nt   = llvm.mlir.constant(2 : i32) : i32
+    %nh   = llvm.mlir.constant(8 : i32) : i32
+    %nr   = llvm.mlir.constant(4 : i32) : i32
+    %nc   = llvm.mlir.constant(8 : i32) : i32
+    %tk   = llvm.mlir.constant(4 : i32) : i32
+    %ra   = llvm.mlir.constant(4 : i32) : i32
+    %wn   = llvm.mlir.constant(0 : i32) : i32
+    %p0   = llvm.mlir.constant(8 : i32) : i32
+    %rs   = llvm.mlir.constant(0 : i32) : i32
+    %rc   = llvm.mlir.constant(16 : i32) : i32
+    %qts  = llvm.mlir.constant(16384 : i32) : i32
+    %qhs  = llvm.mlir.constant(2048 : i32) : i32
+    %rrs  = llvm.mlir.constant(2048 : i32) : i32
+    %crs  = llvm.mlir.constant(2048 : i32) : i32
+    %tts  = llvm.mlir.constant(16 : i32) : i32
+    %dts  = llvm.mlir.constant(16384 : i32) : i32
+    %dhs  = llvm.mlir.constant(2048 : i32) : i32
+    %scl  = llvm.mlir.constant(1 : i32) : i32
+    %hd   = llvm.mlir.constant(512 : i32) : i32
+    %hg   = llvm.mlir.constant(8 : i32) : i32
+    %sb   = llvm.mlir.constant(32 : i32) : i32
+    %rb   = llvm.mlir.constant(4 : i32) : i32
+    %ret  = llvm.call @__tile_indexed_mixed_attention_h8_rb4_f32(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %nt, %nh, %nr, %nc, %tk, %ra, %wn, %p0, %rs, %rc, %qts, %qhs, %rrs, %crs, %tts, %dts, %dhs, %scl, %hd, %hg, %sb, %rb) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
+    llvm.return
+  }
+}
+"#;
+
 fn try_emit(mlir: &str) -> Result<String, String> {
     TargetRegistry::with_builtin().select("msl").expect("msl").emit(mlir, &EmitOpts::default()).map(|o| o.source)
 }
@@ -103,21 +166,49 @@ module {{
     )
 }
 
+/// (committed file stem, MLIR it is emitted from, staging it must use)
+const SHIPPED: [(&str, &str, &str); 4] = [
+    ("dsv4_indexed_mixed_attention_h8", ROW_MLIR_FLOAT_SPELLING, "float4 q0 = q4[simd_lane +  0];"),
+    ("dsv4_indexed_mixed_attention_h8_half", ROW_HALF_MLIR, "half4 q0 = (half4)q4[simd_lane +  0];"),
+    ("dsv4_indexed_mixed_attention_h8_rb4", BATCHED_MLIR, "half4 q0 = (half4)q4[simd_lane +  0];"),
+    ("dsv4_indexed_mixed_attention_h8_rb4_float", BATCHED_FLOAT_MLIR, "float4 q0 = q4[simd_lane +  0];"),
+];
+
+/// The committed float one-row kernel predates the stage operand, so its MLIR
+/// is the original call with the float spelling appended.
+const ROW_MLIR_FLOAT_SPELLING: &str = "row-float";
+
+fn mlir_for(entry: &str) -> String {
+    if entry == ROW_MLIR_FLOAT_SPELLING {
+        ROW_HALF_MLIR
+            .replace("ds4_dsv4_indexed_mixed_attention_h8_half(", "ds4_dsv4_indexed_mixed_attention_h8(")
+            .replace("llvm.mlir.constant(16 : i32) : i32\n    %ret", "llvm.mlir.constant(32 : i32) : i32\n    %ret")
+    } else {
+        entry.to_string()
+    }
+}
+
 #[test]
-fn shipped_kernels_are_reproduced() {
-    // One-row kernel: the committed file is the float-staged spelling.
-    let float_row = try_emit(&shaped(512, 8, 32, None)).unwrap();
-    assert_eq!(float_row, golden("dsv4_indexed_mixed_attention_h8").replace("ds4_dsv4_indexed_mixed_attention_h8(", "attn_gate("));
-    // Batched kernel: default operands and the explicit shipped shape.
+fn every_shipped_precision_is_reproduced() {
+    for (stem, entry, staging) in SHIPPED {
+        let emitted = try_emit(&mlir_for(entry)).unwrap();
+        assert!(emitted.contains(staging), "{stem} must stage with `{staging}`");
+        assert!(emitted.contains(&format!("kernel void ds4_{stem}(")), "{stem}: kernel name");
+        assert_eq!(emitted, golden(stem), "{stem} differs from its committed file");
+    }
+}
+
+#[test]
+fn default_operands_keep_the_emitter_defaults() {
+    // Without shape operands the one-row kernel stages half and the batched
+    // kernel half, as the emitter did before the operands existed.
+    let row = try_emit(ROW_MLIR).unwrap();
+    assert_eq!(row.replace("ds4_dsv4_indexed_mixed_attention_h8(", "ds4_dsv4_indexed_mixed_attention_h8_half("), golden("dsv4_indexed_mixed_attention_h8_half"));
     assert_eq!(try_emit(BATCHED_MLIR).unwrap(), golden("dsv4_indexed_mixed_attention_h8_rb4"));
     assert_eq!(
-        try_emit(&shaped(512, 8, 16, Some(4))).unwrap(),
-        golden("dsv4_indexed_mixed_attention_h8_rb4").replace("ds4_dsv4_indexed_mixed_attention_h8_rb4(", "attn_gate(")
+        try_emit(&shaped(512, 8, 32, None)).unwrap(),
+        golden("dsv4_indexed_mixed_attention_h8").replace("ds4_dsv4_indexed_mixed_attention_h8(", "attn_gate(")
     );
-    // The one-row default is the half-staged kernel.
-    let half_row = try_emit(ROW_MLIR).unwrap();
-    assert!(half_row.contains("half4 q0 = (half4)q4[simd_lane +  0];"), "{half_row}");
-    assert_eq!(half_row.replace("ds4_dsv4_indexed_mixed_attention_h8(", "attn_gate("), try_emit(&shaped(512, 8, 16, None)).unwrap());
 }
 
 #[test]
@@ -328,7 +419,7 @@ mod gpu {
         for (hd, heads, stage) in [(512, 8, 16), (512, 8, 32), (128, 4, 32), (256, 8, 16), (1024, 8, 32), (128, 1, 16), (128, 32, 32)] {
             run(&dev, hd, heads, stage, None);
         }
-        for (hd, heads, stage, rows) in [(512, 8, 16, 4), (128, 2, 32, 1), (256, 4, 16, 3), (512, 16, 32, 2), (1024, 8, 32, 8)] {
+        for (hd, heads, stage, rows) in [(512, 8, 16, 4), (512, 8, 32, 4), (128, 2, 32, 1), (256, 4, 16, 3), (512, 16, 32, 2), (1024, 8, 32, 8)] {
             run(&dev, hd, heads, stage, Some(rows));
         }
     }
