@@ -8673,7 +8673,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::TopkMaskScatter => emit_topk_mask_scatter_msl(out),
         KernelType::Dsv4RouterWeightsOne => emit_dsv4_router_weights_one_msl(out),
         KernelType::Dsv4IndexerWeightedSum => emit_dsv4_indexer_weighted_sum_msl(out),
-        KernelType::SortI32RowsAsc => emit_sort_i32_rows_asc_msl(out),
+        KernelType::SortI32RowsAsc => {
+            let max_top_k = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => SORT_ROWS_DS4_MAX_TOP_K,
+            };
+            check_sort_capacity("sort_i32_rows_asc", "max_top_k", max_top_k)?;
+            emit_sort_i32_rows_asc_msl(out, max_top_k)
+        }
         KernelType::Dsv4SoftmaxPool => emit_dsv4_softmax_pool_msl(out),
         KernelType::Dsv4CompressorStoreOne => emit_dsv4_compressor_store_one_msl(out),
         KernelType::Dsv4KvFp8Store | KernelType::Dsv4Fp8KvQuantize => {
@@ -8779,9 +8786,21 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4HcSplitSinkhornHc4 => emit_dsv4_hc_split_sinkhorn_hc4_msl(out),
         KernelType::Dsv4HcSplitWeightedSumHc4 => emit_dsv4_hc_split_weighted_sum_hc4_msl(out),
         KernelType::Dsv4HcSplitWeightedSumNorm4 => emit_dsv4_hc_split_weighted_sum_norm4_msl(out),
-        KernelType::ArgsortF32I32Desc => emit_argsort_f32_i32_desc_msl(out),
+        KernelType::ArgsortF32I32Desc | KernelType::ArgsortF32I32DescFull => {
+            let full = ctx.kernel_type == KernelType::ArgsortF32I32DescFull;
+            let kernel = if full { "argsort_f32_i32_desc_full" } else { "argsort_f32_i32_desc" };
+            let max_row = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => ARGSORT_DS4_MAX_ROW,
+            };
+            check_sort_capacity(kernel, "max_row", max_row)?;
+            if full {
+                emit_argsort_f32_i32_desc_full_msl(out, max_row)
+            } else {
+                emit_argsort_f32_i32_desc_msl(out, max_row)
+            }
+        }
         KernelType::ArgsortMergeF32I32Desc => emit_argsort_merge_f32_i32_desc_msl(out),
-        KernelType::ArgsortF32I32DescFull => emit_argsort_f32_i32_desc_full_msl(out),
         KernelType::ArgsortMergeF32I32DescFull => emit_argsort_merge_f32_i32_desc_full_msl(out),
         KernelType::Dsv4MoeSwigluWeight => emit_dsv4_moe_swiglu_weight_msl(out, false),
         KernelType::Dsv4MoeSwigluWeightF16 => emit_dsv4_moe_swiglu_weight_msl(out, true),
@@ -10592,6 +10611,8 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_sort_i32_rows_asc_i32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::SortI32RowsAsc;
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 4, &["max_top_k"], ctx));
                     }
                 }
                 "__tile_softmax_pool_f32" => {
@@ -10764,6 +10785,8 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_argsort_f32_i32_desc" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::ArgsortF32I32Desc;
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 7, &["max_row"], ctx));
                     }
                 }
                 "__tile_argsort_merge_f32_i32_desc" => {
@@ -10774,6 +10797,8 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_argsort_f32_i32_desc_full" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::ArgsortF32I32DescFull;
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 15, &["max_row"], ctx));
                     }
                 }
                 "__tile_argsort_merge_f32_i32_desc_full" => {
@@ -26215,7 +26240,7 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_argsort_f32_i32_desc_full_msl() {
         check(
-            |o| emit_argsort_f32_i32_desc_full_msl(o),
+            |o| emit_argsort_f32_i32_desc_full_msl(o, ARGSORT_DS4_MAX_ROW),
             "device const float * src0_row = (device const float *) (p0 + (uint64_t) nb01 * (uint64_t) i01 + (uint64_t) nb02 * (uint64_t) i02 + (uint64_t) nb03 * (uint64_t) i03);",
             "emit_argsort_f32_i32_desc_full_msl",
         );
@@ -26223,7 +26248,7 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_argsort_f32_i32_desc_msl() {
         check(
-            |o| emit_argsort_f32_i32_desc_msl(o),
+            |o| emit_argsort_f32_i32_desc_msl(o, ARGSORT_DS4_MAX_ROW),
             "device const float * src_row = (device const float *) (p0 + (uint64_t)row * nb01);",
             "emit_argsort_f32_i32_desc_msl",
         );
@@ -28544,7 +28569,7 @@ module {
     #[test]
     fn t_emit_sort_i32_rows_asc_msl() {
         check(
-            |o| emit_sort_i32_rows_asc_msl(o),
+            |o| emit_sort_i32_rows_asc_msl(o, SORT_ROWS_DS4_MAX_TOP_K),
             "row_tmp[tid] = p0[row * top_k + tid];",
             "emit_sort_i32_rows_asc_msl",
         );

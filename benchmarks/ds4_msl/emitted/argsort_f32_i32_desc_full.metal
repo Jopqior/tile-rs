@@ -76,3 +76,4 @@ kernel void ds4_kernel_argsort_f32_i32_desc_full(
         dst[col] = shmem_i32[col];
     }
 }
+

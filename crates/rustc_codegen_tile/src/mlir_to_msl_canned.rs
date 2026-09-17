@@ -2436,8 +2436,9 @@ pub(super) fn emit_dsv4_router_weights_one_msl(out: &mut String) {
 /// Buffers: p0=src(int*), p1=dst(int*). Params: top_k, num_rows.
 /// Layout: row-major, src[row, tid] = row * top_k + tid (flat-1D vs antirez byte strides).
 /// MAX_TOPK=256 covers DS4 typical top_k ∈ {64, 128, 256}.
-pub(super) fn emit_sort_i32_rows_asc_msl(out: &mut String) {
-    writeln!(out, "    constexpr uint MAX_TOPK = 256;").unwrap();
+/// `max_top_k` sizes the per-row staging; the runtime `top_k` must not exceed it.
+pub(super) fn emit_sort_i32_rows_asc_msl(out: &mut String, max_top_k: u32) {
+    writeln!(out, "    constexpr uint MAX_TOPK = {max_top_k};").unwrap();
     writeln!(out, "    threadgroup int row_tmp[MAX_TOPK];").unwrap();
     writeln!(out, "    if (row >= num_rows || tid >= top_k) return;").unwrap();
     writeln!(out, "    row_tmp[tid] = p0[row * top_k + tid];").unwrap();
@@ -6270,10 +6271,11 @@ pub(super) fn emit_dsv4_hc_split_weighted_sum_norm4_msl(out: &mut String) {
 /// power of two ≥ ne00. Threads with id ≥ ne00 hold sentinel indices (= ne00)
 /// that lose all comparisons, so the top ne00 values land in the front.
 /// Buffers: p0=src (char* float row), p1=dst (int* writable, ne0×ne01).
-pub(super) fn emit_argsort_f32_i32_desc_msl(out: &mut String) {
+/// `max_row` sizes the index staging: one int per column, one thread per column.
+pub(super) fn emit_argsort_f32_i32_desc_msl(out: &mut String, max_row: u32) {
     writeln!(out, "    if (row >= ne01) return;").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    threadgroup int shmem_i32[1024];").unwrap();
+    writeln!(out, "    threadgroup int shmem_i32[{max_row}];").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const uint col = tid;").unwrap();
     writeln!(
@@ -6451,8 +6453,9 @@ pub(super) fn emit_argsort_merge_f32_i32_desc_msl(out: &mut String) {
 /// per group. ne00 is the (logical) input row length; ntg.x must be a power of
 /// two and ≥ that block's portion of ne00 (antirez splits when ne00 > 1024 by
 /// using ib = tgpig.x / ne01 to step blocks of ntg.x columns).
-pub(super) fn emit_argsort_f32_i32_desc_full_msl(out: &mut String) {
-    writeln!(out, "    threadgroup int shmem_i32[1024];").unwrap();
+/// `max_row` sizes the index staging: one int per column, one thread per column.
+pub(super) fn emit_argsort_f32_i32_desc_full_msl(out: &mut String, max_row: u32) {
+    writeln!(out, "    threadgroup int shmem_i32[{max_row}];").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const int col = (int) tpitg.x;").unwrap();
     writeln!(out, "    const int ib  = (int) tgpig.x / (int) ne01;").unwrap();
@@ -21785,6 +21788,23 @@ pub(super) fn check_fp8_kv_block(kernel: &str, block: u32) -> Result<(), String>
     if !(2..=1024).contains(&block) || !block.is_power_of_two() {
         return Err(format!(
             "{kernel}: block {block} must be a power of two from 2 to 1024 (one thread per element, tree max over the block)"
+        ));
+    }
+    Ok(())
+}
+
+/// Per-row staging the DeepSeek-V4 top-k sort ships with.
+pub(super) const SORT_ROWS_DS4_MAX_TOP_K: u32 = 256;
+
+/// Index staging the argsort kernels ship with: one thread per column, and
+/// Metal allows at most 1024 threads in a threadgroup.
+pub(super) const ARGSORT_DS4_MAX_ROW: u32 = 1024;
+
+/// Why a bitonic-sort capacity cannot be emitted, if it cannot.
+pub(super) fn check_sort_capacity(kernel: &str, what: &str, capacity: u32) -> Result<(), String> {
+    if !(2..=1024).contains(&capacity) || !capacity.is_power_of_two() {
+        return Err(format!(
+            "{kernel}: {what} {capacity} must be a power of two from 2 to 1024 (one thread per element, bitonic network)"
         ));
     }
     Ok(())

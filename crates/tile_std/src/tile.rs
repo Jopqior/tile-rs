@@ -510,7 +510,17 @@ extern "C" {
     /// DS4 sort_i32_rows_asc: bitonic sort each row of an int32 (num_rows × top_k) buffer ascending.
     /// p0=src (int*), p1=dst (int*). One threadgroup per row, top_k threads per group.
     /// top_k must be a power of two ≤ 256.
-    pub fn __tile_sort_i32_rows_asc_i32(src: u32, dst: u32, top_k: u32, num_rows: u32) -> u32;
+    ///
+    /// `max_top_k` is the per-row staging: a compile-time power of two up to 1024,
+    /// at least the runtime `top_k`. Dispatch one threadgroup of `top_k` threads
+    /// per row. DeepSeek-V4 uses 256.
+    pub fn __tile_sort_i32_rows_asc_i32(
+        src: u32,
+        dst: u32,
+        top_k: u32,
+        num_rows: u32,
+        max_top_k: u32,
+    ) -> u32;
 
     /// DS4 softmax_pool: per (id, ic) reduce dst[ic,id] = Σ_ir softmax(score[ir,id,ic]) * kv[ir,id,ic].
     /// p0=kv (R*ne1*ne0), p1=score (R*ne1*ne0), p2=dst (ne1*ne0). Dispatch one thread per (id, ic).
@@ -1061,6 +1071,10 @@ extern "C" {
     /// DS4 argsort_f32_i32_desc: bitonic sort one float row → int32 index
     /// permutation, descending. One threadgroup per row. Threadgroup size
     /// must be a power of two ≥ ne00. Buffers: src (float row), dst (int).
+    ///
+    /// `max_row` is the index staging: a compile-time power of two up to 1024, at
+    /// least the threadgroup's thread count (one thread per column). DeepSeek-V4
+    /// uses 1024.
     pub fn __tile_argsort_f32_i32_desc(
         src: u32,
         dst: u32,
@@ -1069,6 +1083,7 @@ extern "C" {
         top_k: u32,
         ne0: u32,
         nb01: u32,
+        max_row: u32,
     ) -> u32;
 
     /// DS4 argsort_merge_f32_i32_desc: merge two pre-sorted descending int32
@@ -1091,6 +1106,10 @@ extern "C" {
     /// batched surface from antirez. Dispatched as (ib*ne01, ne02, ne03)
     /// threadgroups; ntg.x threads per group must be a power of two and large
     /// enough to cover ne00 (or step ne00 in ntg.x-sized blocks when ib > 0).
+    ///
+    /// `max_row` is the index staging: a compile-time power of two up to 1024, at
+    /// least the threadgroup's thread count (one thread per column). DeepSeek-V4
+    /// uses 1024.
     pub fn __tile_argsort_f32_i32_desc_full(
         src0: u32,
         dst: u32,
@@ -1107,6 +1126,7 @@ extern "C" {
         ne2: u32,
         ne3: u32,
         top_k: u32,
+        max_row: u32,
     ) -> u32;
 
     /// DS4 kernel_argsort_merge_f32_i32_desc M135 full host_name (argsort.metal:266):
