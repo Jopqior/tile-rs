@@ -161,6 +161,56 @@ enum KernelType {
     AttentionGqa, // grouped query attention: num_heads != num_kv_heads
     Rope,        // rotary position embeddings
     RopeDsv4,    // DS4 partial-RoPE: copy n_nope prefix, rotate tail with YaRN
+    // DS4 V4.1 kernel_dsv41_carry_copy (dsv41.metal): carries between a packed representation
+    // and a plain f32 one, both directions. format 0 = bf16 (pack keeps the top 16 bits of each
+    // f32, unpack shifts them back); format 1 = a 32-bit allowed-mask (pack sets a bit per lane
+    // whose plain value is 0.0, unpack writes 0.0 for a set bit and -INFINITY otherwise).
+    // p0=packed (writable), p1=plain (writable). Uniforms width, words, format, pack.
+    // The upstream kernel takes a 2D grid; this FLATTENS it so `row` indexes
+    // (plain row, 128-column block), which avoids adding a signature class.
+    // DS4 V4.1 kernel_dsv41_engram_add (dsv41.metal): the engram contribution. Per
+    // (token, sub-row) it takes an RMS-normalised, q/k-weighted dot between the residual and a
+    // bf16-rounded key, turns it into a sign-preserving sqrt-magnitude sigmoid gate, and adds
+    // gate * bf16(value) back into the residual, itself bf16-rounded.
+    // p0=residual (WRITABLE), p1=kv, p2=q_weight, p3=k_weight, p4=mask (const).
+    // Uniforms width, eps, masked. Grid FLATTENED to 1D: row = token*4 + sub_row, one
+    // 32-thread threadgroup each, so simd_lane spans the row and simd_sum reduces it.
+    // DS4 V4.1 candidate stage (dsv41.metal). Both share args {width, rows, start, ratio} and
+    // three buffers, writing only the middle one. `visible` is the causal frontier for row y:
+    // min(width, (start + y + 1) / ratio).
+    // blocks: p0=scores, p1=blocks(W), p2=unused — per 8-column block, the max score within the
+    //   visible frontier; the block CONTAINING the frontier is forced to +INFINITY.
+    // filter: p0=scores, p1=out(W), p2=block_mask — keep the score where the column is visible
+    //   and its block's mask is 0.0, else -INFINITY.
+    // Grid FLATTENED to 1D: gid = row*tcount + tid, split by the x extent (count, or width).
+    // DS4 V4.1 kernel_dsv41_bf16_linear (dsv41.metal): round a whole buffer to bf16 in place,
+    // round-to-nearest-even, leaving non-finite values alone. p0 writable. Uniform count.
+    // DS4 V4.1 kernel_deepseek41_vision_bias_residual (deepseek4_vision.metal): add a bf16 bias
+    // and a residual to a projection, rounding to bf16 at BOTH steps.
+    // p0=x (W), p1=bias (bf16 halves), p2=residual. Uniforms width, rows.
+    // DS4 V4.1 kernel_dsv41_indexer_pack (dsv41.metal): convert queries and keys to bfloat and
+    // record, per group, whether EVERY element round-tripped exactly. The flag decides later
+    // whether the packed bf16 path may be used or the f32 one must be.
+    // p0=q, p1=keys; p2=flags(W), p3=packed_q(W), p4=packed_keys(W).
+    // Uniforms key_count, query_count. One 128-thread threadgroup per group.
+    Dsv41IndexerPack,
+    Dsv41VisionBiasResidual,
+    // DS4 V4.1 kernel_deepseek41_vision_swiglu_split: SwiGLU over a [gate|up] row pair. The 4.1
+    // variant rounds the SiLU result to bf16 before multiplying, which the V4 one does not.
+    // p0=gate_up, p1=out (W). Uniforms width, rows.
+    Dsv41VisionSwigluSplit,
+    Dsv41Bf16Linear,
+    // DS4 V4.1 kernel_moe_packed_offsets (moe.metal): exclusive prefix sum of per-expert row
+    // counts. p0=counts, p1=offsets (W). Uniform experts. Serial — one thread does it.
+    Dsv41MoePackedOffsets,
+    // DS4 V4.1 kernel_dsv41_pool2 (dsv41.metal): softmax-weighted pooling of adjacent KV pairs,
+    // bf16-rounded. p0=out(W), p1=kv, p2=scores, p3=previous_kv, p4=previous_scores.
+    // Uniforms width, pairs, tail. A negative left index reads the PREVIOUS chunk's tail.
+    Dsv41Pool2,
+    Dsv41CandidateBlocks,
+    Dsv41CandidateFilter,
+    Dsv41EngramAdd,
+    Dsv41CarryCopy,
     Dsv4Ratio4Shift, // DS4 KV ratio-4 recurrent-state shift: state[i]=state[4w+i] for two buffers
     TopkMaskScatter, // DS4 topk_mask_scatter: dst[topk[gid]] = 0.0 if topk[gid] in [0, dst_len)
     Dsv4RouterWeightsOne, // DS4 router_weights_one: w[i] = probs[selected[i]] / sum(probs[selected[*]]) * 1.5
@@ -370,6 +420,11 @@ enum KernelType {
     // Decode-optimized ops (cooperative reduction, single-token path)
     MatvecF16,      // matvec with f16 weights, f32 accum, cooperative simd_sum + shared mem
     MatvecF16Bias,  // same with bias
+    /// FUSED lm_head + argmax: the matvec's logits are NEVER written to memory.
+    /// A simdgroup computes one row's full dot product and keeps only the running
+    /// best, so global traffic is the WEIGHTS plus one (value, index) partial per
+    /// threadgroup instead of a vocab-wide logit buffer written and then read back.
+    MatvecArgmaxF16,
     MatvecF16Add,   // matvec with f16 weights + residual add: out = A@B + R
     MatvecI8V4,     // matvec with int8 weights, per-row f16 scale, float4/char4 vectorized loads
     MatvecI8V4Batched, // batched (M=8) int8 matvec: M-partition of MatvecI8V4 — one weight read reused across 8 activation columns
@@ -553,6 +608,11 @@ fn is_structural_intrinsic(name: &str) -> bool {
 const FUSED_COMPUTE_PAIRS: &[(&str, &str)] = &[
     // KernelType::SiLUMul — gated MLP activation, out = silu(gate) * up.
     ("__tile_silu_f32", "__tile_mul_f32"),
+    // KernelType::MatvecArgmaxF16 — lm_head + greedy pick. The epilogue here is
+    // a REDUCTION over the matvec's output rather than an elementwise map, so
+    // the fused kernel emits (value, index) partials instead of the matvec's
+    // logits: the vocab-wide logit buffer is never written at all.
+    ("__tile_matvec_f16", "__tile_argmax_f32"),
 ];
 
 /// Reject kernels that chain compute intrinsics this emitter cannot fold.
@@ -1161,6 +1221,16 @@ const KNOWN_INTRINSICS: &[&str] = &[
     "__tile_dsv4_hc_weighted_sum_f32",
     "__tile_dsv4_q8_hc_expand4_q8_0",
     "__tile_dsv4_ratio4_shift_f32",
+    "__tile_dsv41_carry_copy",
+    "__tile_dsv41_bf16_linear",
+    "__tile_dsv41_candidate_blocks",
+    "__tile_dsv41_candidate_filter",
+    "__tile_dsv41_engram_add",
+    "__tile_dsv41_indexer_pack",
+    "__tile_dsv41_moe_packed_offsets",
+    "__tile_dsv41_pool2",
+    "__tile_dsv41_vision_bias_residual",
+    "__tile_dsv41_vision_swiglu_split",
     "__tile_dsv4_rope_tail_f32",
     "__tile_dsv4_shared_down_hc_expand4_q8_0",
     "__tile_dsv4_shared_gate_up_swiglu_q8_0",
@@ -1627,6 +1697,14 @@ pub fn convert_mlir_to_msl(mlir_text: &str) -> Result<String, String> {
             if func.body_lines.iter().any(|l| l.contains("__tile_matmul_splitk_")) {
                 emit_splitk_reduce_msl(&mut out, &func.name);
             }
+            // The fused lm_head+argmax kernel IS stage 1; it only needs the fold
+            // that turns its G partials into one index. Emitted together for the
+            // same reason as split-K: a caller cannot get one without the other.
+            let has_argmax = func.body_lines.iter().any(|l| l.contains("__tile_argmax_f32"));
+            let has_matvec = func.body_lines.iter().any(|l| l.contains("__tile_matvec_f16"));
+            if has_argmax && has_matvec {
+                emit_argmax_fused_final_msl(&mut out, &func.name);
+            }
             count += 1;
         }
     }
@@ -1849,6 +1927,8 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Quantize | KernelType::Dequantize => 3, // src, scale, output
         // Phase 6 MTP
         KernelType::ArgMax | KernelType::SampleTopP => 2, // src, dst
+        // activation(f32), weight(f16), partial values(f32), partial indices(f32)
+        KernelType::MatvecArgmaxF16 => 4,
         KernelType::DraftVerify => 3, // draft_tokens, target_logits, accept_probs
         KernelType::TokenAccept => 4, // draft, target, probs, out
         // Transformer ops
@@ -1857,6 +1937,16 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::AttentionGqa | KernelType::AttentionGqaStrided => 4,  // q, k, v, out
         KernelType::Rope       => 2,    // src, dst
         KernelType::RopeDsv4   => 4,    // src, pos(int), src2_freq(float, optional), dst
+        KernelType::Dsv41IndexerPack => 5,        // q, keys, flags(w), packed_q(w), packed_keys(w)
+        KernelType::Dsv41VisionBiasResidual => 3, // x(w), bias, residual
+        KernelType::Dsv41VisionSwigluSplit => 2,  // gate_up, out(w)
+        KernelType::Dsv41Bf16Linear => 1,      // x, in place
+        KernelType::Dsv41MoePackedOffsets => 2, // counts, offsets(w)
+        KernelType::Dsv41Pool2 => 5,           // out(w), kv, scores, prev_kv, prev_scores
+        KernelType::Dsv41CandidateBlocks => 3, // scores, blocks(w), unused
+        KernelType::Dsv41CandidateFilter => 3, // scores, out(w), block_mask
+        KernelType::Dsv41EngramAdd => 5,  // residual(w), kv, q_weight, k_weight, mask
+        KernelType::Dsv41CarryCopy => 2,  // packed, plain — which is written depends on `pack`
         KernelType::Dsv4Ratio4Shift => 2, // state_kv, state_score
         KernelType::TopkMaskScatter => 2, // topk(int), dst(float)
         KernelType::Dsv4RouterWeightsOne => 3, // probs(float), selected(int), weights(float)
@@ -2147,7 +2237,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
 
     let is_mixed_precision = matches!(
         ctx.kernel_type,
-        KernelType::MatvecF16 | KernelType::MatvecF16Bias
+        KernelType::MatvecArgmaxF16 | KernelType::MatvecF16 | KernelType::MatvecF16Bias
     );
     let is_int_ids_p1 = matches!(
         ctx.kernel_type,
@@ -2207,6 +2297,15 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             | KernelType::MulMvIdQ8_0F32
             | KernelType::MulMvIdQ2KF32
             | KernelType::MulMvIdQ4KF32
+            // Both of these address their buffers by BYTE offset -- nb01/nb02/
+            // nb12 are byte strides over quantized blocks -- but were absent
+            // here, so they were declared `float*` and the emitted MSL did not
+            // compile: `device const char * x = p0 + offset` against a float
+            // pointer. Their own emitter tests assert on substrings only, so
+            // nothing caught it until a gate ran the Metal compiler on the
+            // output.
+            | KernelType::MulMvQ4KF32
+            | KernelType::MulMvIdQ6KDownF32
             | KernelType::MulMvIdIq2XxsF32
             | KernelType::Dsv4AttnOutLowQ8_0F32
             | KernelType::Dsv4SharedGateUpSwigluQ8_0
@@ -2371,6 +2470,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
     let all_buffers_writable = matches!(
         ctx.kernel_type,
         KernelType::Dsv4Ratio4Shift
+            | KernelType::Dsv41CarryCopy
             | KernelType::TopkMaskScatter
             | KernelType::SortI32RowsAsc
             | KernelType::Dsv4KvFp8Store
@@ -2382,7 +2482,10 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4CompressorStoreOne | KernelType::MulMvF16F32Pair_4
     );
     // dsv4_shared_gate_up_swiglu_q8_0 (M114): p0..p2 const (src0_gate, src0_up, src1), p3..p5 writable (dst_gate, dst_up, dst_mid).
-    let last_three_writable = matches!(ctx.kernel_type, KernelType::Dsv4SharedGateUpSwigluQ8_0);
+    let last_three_writable = matches!(
+        ctx.kernel_type,
+        KernelType::Dsv4SharedGateUpSwigluQ8_0 | KernelType::Dsv41IndexerPack
+    );
     // dsv4_q8_hc_expand4_q8_0 (M126): idx 2 (block_out) and idx 6 (dst) writable; rest const.
     let is_q8_hc_expand4 = matches!(ctx.kernel_type, KernelType::Dsv4Q8HcExpand4Q8_0);
     // dsv4_shared_down_hc_expand4_q8_0 (M127): idx 2 (shared_out) and idx 7 (dst) writable; rest const.
@@ -2448,6 +2551,22 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
     let is_rms_gate_up_swiglu_dense = matches!(ctx.kernel_type, KernelType::MulMvRmsGateUpSwigluQ4KF32); // F2: 5 bufs, only p4 writable
     // matvec_i8_v4: p0=activation(float* const), p1=weight(char* const),
     //   p2=output(float* writable), p3=scale(half* const).
+    // engram_add: 5 bufs, only p0 (residual) is written; p1..p4 stay const.
+    // candidate stage: 3 bufs, only p1 is written.
+    let is_candidate_stage = matches!(
+        ctx.kernel_type,
+        KernelType::Dsv41CandidateBlocks | KernelType::Dsv41CandidateFilter
+    );
+    // p0 written, the rest const.
+    let is_engram_add = matches!(
+        ctx.kernel_type,
+        KernelType::Dsv41EngramAdd | KernelType::Dsv41Pool2 | KernelType::Dsv41VisionBiasResidual
+    );
+    // last buffer written, the rest const.
+    let is_v41_last_writable = matches!(
+        ctx.kernel_type,
+        KernelType::Dsv41MoePackedOffsets | KernelType::Dsv41VisionSwigluSplit
+    );
     let is_matvec_i8_v4 = ctx.kernel_type == KernelType::MatvecI8V4;
     let is_matvec_i8_v4_batched = ctx.kernel_type == KernelType::MatvecI8V4Batched;
     // matvec_q4k: p0=weight(uchar* const packed blocks), p1=activation(float* const),
@@ -2462,6 +2581,12 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             ""
         } else if all_buffers_writable {
             ""
+        } else if is_v41_last_writable {
+            if i + 1 < num_bufs { "const" } else { "" }
+        } else if is_candidate_stage {
+            if i == 1 { "" } else { "const" }
+        } else if is_engram_add {
+            if i == 0 { "" } else { "const" }
         } else if is_rope_inplace {
             ""
         }
@@ -2537,6 +2662,11 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             } else {
                 "const"
             }
+        }
+        // MatvecArgmaxF16 writes TWO buffers -- the (value, index) partials --
+        // so the default "everything but the last is const" is wrong for it.
+        else if ctx.kernel_type == KernelType::MatvecArgmaxF16 {
+            if i >= 2 { "" } else { "const" }
         } else if i + 1 < num_bufs {
             "const"
         } else {
@@ -3381,6 +3511,47 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
                 params_idx
             )
             .unwrap();
+        }
+        KernelType::Dsv41IndexerPack => {
+            for (i, n) in ["key_count", "query_count"].iter().enumerate() {
+                writeln!(out, "    constant uint& {:<11} [[ buffer({}) ]],", n, params_idx + i)
+                    .unwrap();
+            }
+        }
+        KernelType::Dsv41VisionBiasResidual | KernelType::Dsv41VisionSwigluSplit => {
+            for (i, n) in ["width", "rows"].iter().enumerate() {
+                writeln!(out, "    constant uint& {:<11} [[ buffer({}) ]],", n, params_idx + i)
+                    .unwrap();
+            }
+        }
+        KernelType::Dsv41Bf16Linear => {
+            writeln!(out, "    constant uint& count       [[ buffer({}) ]],", params_idx).unwrap();
+        }
+        KernelType::Dsv41MoePackedOffsets => {
+            writeln!(out, "    constant uint& experts     [[ buffer({}) ]],", params_idx).unwrap();
+        }
+        KernelType::Dsv41Pool2 => {
+            for (i, n) in ["width", "pairs", "tail"].iter().enumerate() {
+                writeln!(out, "    constant uint& {:<11} [[ buffer({}) ]],", n, params_idx + i)
+                    .unwrap();
+            }
+        }
+        KernelType::Dsv41CandidateBlocks | KernelType::Dsv41CandidateFilter => {
+            for (i, n) in ["width", "rows", "start", "ratio"].iter().enumerate() {
+                writeln!(out, "    constant uint& {:<11} [[ buffer({}) ]],", n, params_idx + i)
+                    .unwrap();
+            }
+        }
+        KernelType::Dsv41EngramAdd => {
+            writeln!(out, "    constant uint&  width       [[ buffer({}) ]],", params_idx).unwrap();
+            writeln!(out, "    constant float& eps         [[ buffer({}) ]],", params_idx + 1).unwrap();
+            writeln!(out, "    constant uint&  masked      [[ buffer({}) ]],", params_idx + 2).unwrap();
+        }
+        KernelType::Dsv41CarryCopy => {
+            for (i, n) in ["width", "words", "format", "pack"].iter().enumerate() {
+                writeln!(out, "    constant uint& {:<11} [[ buffer({}) ]],", n, params_idx + i)
+                    .unwrap();
+            }
         }
         KernelType::Dsv4Ratio4Shift => {
             writeln!(
@@ -6266,6 +6437,92 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             )
             .unwrap();
         }
+        KernelType::MulMvQ4KF32 => {
+            // Dense (non-id) Q4_K matvec: the same 13 shape/stride uniforms the
+            // f32/f16 dense mul_mv arm takes, MINUS `nr0` -- this kernel fixes
+            // NR0=2 at emit time rather than switching on it at runtime. It
+            // cannot simply join that arm: `nr0` sits in the middle of its list,
+            // so sharing it would shift every nb* buffer index by one against
+            // what the host binds.
+            writeln!(
+                out,
+                "    constant uint&  ne00   [[ buffer({}) ]],",
+                params_idx + 0
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  ne01   [[ buffer({}) ]],",
+                params_idx + 1
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  ne0    [[ buffer({}) ]],",
+                params_idx + 2
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  ne1    [[ buffer({}) ]],",
+                params_idx + 3
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  ne12   [[ buffer({}) ]],",
+                params_idx + 4
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  r2     [[ buffer({}) ]],",
+                params_idx + 5
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  r3     [[ buffer({}) ]],",
+                params_idx + 6
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb01   [[ buffer({}) ]],",
+                params_idx + 7
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb02   [[ buffer({}) ]],",
+                params_idx + 8
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb03   [[ buffer({}) ]],",
+                params_idx + 9
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb11   [[ buffer({}) ]],",
+                params_idx + 10
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb12   [[ buffer({}) ]],",
+                params_idx + 11
+            )
+            .unwrap();
+            writeln!(
+                out,
+                "    constant uint&  nb13   [[ buffer({}) ]],",
+                params_idx + 12
+            )
+            .unwrap();
+        }
         KernelType::MulMvIdQ8_0F32
         | KernelType::MulMvIdQ2KF32
         | KernelType::MulMvIdQ4KF32
@@ -7223,7 +7480,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             writeln!(out, "    constant uint& K            [[ buffer({}) ]],", params_idx + 3).unwrap();
         }
         // Decode-optimized ops
-        KernelType::MatvecF16 | KernelType::MatvecI8V4 => {
+        KernelType::MatvecF16 | KernelType::MatvecI8V4 | KernelType::MatvecArgmaxF16 => {
             // p0=activation(f32), p1=weight(half|char, N×K), p2=output(f32) [, p3=row-scale(half)]
             // M always 1 for decode, K=input dim, N=output dim
             writeln!(
@@ -7734,7 +7991,8 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
     // Cooperative kernels need extra thread attributes (simd_lane, simd_id)
     let is_cooperative = matches!(
         ctx.kernel_type,
-        KernelType::MatvecF16
+        KernelType::MatvecArgmaxF16
+            | KernelType::MatvecF16
             | KernelType::MatvecF16Bias
             | KernelType::MatvecF16Add
             | KernelType::MatvecI8V4
@@ -7767,6 +8025,16 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dsv4IndexerScoreOneDirect
             | KernelType::FlashAttnExtVecReduce
             | KernelType::Dsv4HcSplitWeightedSumNorm4
+            | KernelType::Dsv41CarryCopy
+            | KernelType::Dsv41EngramAdd
+            | KernelType::Dsv41CandidateBlocks
+            | KernelType::Dsv41CandidateFilter
+            | KernelType::Dsv41Bf16Linear
+            | KernelType::Dsv41MoePackedOffsets
+            | KernelType::Dsv41Pool2
+            | KernelType::Dsv41VisionBiasResidual
+            | KernelType::Dsv41VisionSwigluSplit
+            | KernelType::Dsv41IndexerPack
     );
     let needs_2d_grid_simd = matches!(
         ctx.kernel_type,
@@ -8157,6 +8425,16 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             | KernelType::Embedding
             | KernelType::Attention | KernelType::AttentionGqa | KernelType::AttentionGqaStrided | KernelType::AttentionCausal
             | KernelType::Dsv4Ratio4Shift
+            | KernelType::Dsv41CarryCopy
+            | KernelType::Dsv41EngramAdd
+            | KernelType::Dsv41CandidateBlocks
+            | KernelType::Dsv41CandidateFilter
+            | KernelType::Dsv41Bf16Linear
+            | KernelType::Dsv41MoePackedOffsets
+            | KernelType::Dsv41Pool2
+            | KernelType::Dsv41VisionBiasResidual
+            | KernelType::Dsv41VisionSwigluSplit
+            | KernelType::Dsv41IndexerPack
             | KernelType::TopkMaskScatter
             | KernelType::Dsv4RouterWeightsOne
             | KernelType::Dsv4IndexerWeightedSum
@@ -8417,6 +8695,7 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::Dequantize => emit_dequantize_msl(out, msl_type),
         // Phase 6 MTP
         KernelType::ArgMax => emit_argmax_msl(out, msl_type),
+        KernelType::MatvecArgmaxF16 => emit_matvec_argmax_f16_msl(out),
         KernelType::SampleTopP => emit_sample_top_p_msl(out, msl_type),
         KernelType::DraftVerify => emit_draft_verify_msl(out, msl_type),
         KernelType::TokenAccept => emit_token_accept_msl(out, msl_type),
@@ -8427,6 +8706,16 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::AttentionGqaStrided => emit_attention_gqa_strided_msl(out, msl_type),
         KernelType::Rope => emit_rope_msl(out, msl_type),
         KernelType::RopeDsv4 => emit_rope_dsv4_msl(out),
+        KernelType::Dsv41IndexerPack => emit_dsv41_indexer_pack_msl(out),
+        KernelType::Dsv41VisionBiasResidual => emit_dsv41_vision_bias_residual_msl(out),
+        KernelType::Dsv41VisionSwigluSplit => emit_dsv41_vision_swiglu_split_msl(out),
+        KernelType::Dsv41Bf16Linear => emit_dsv41_bf16_linear_msl(out),
+        KernelType::Dsv41MoePackedOffsets => emit_dsv41_moe_packed_offsets_msl(out),
+        KernelType::Dsv41Pool2 => emit_dsv41_pool2_msl(out),
+        KernelType::Dsv41CandidateBlocks => emit_dsv41_candidate_blocks_msl(out),
+        KernelType::Dsv41CandidateFilter => emit_dsv41_candidate_filter_msl(out),
+        KernelType::Dsv41EngramAdd => emit_dsv41_engram_add_msl(out),
+        KernelType::Dsv41CarryCopy => emit_dsv41_carry_copy_msl(out),
         KernelType::Dsv4Ratio4Shift => emit_dsv4_ratio4_shift_msl(out),
         KernelType::TopkMaskScatter => emit_topk_mask_scatter_msl(out),
         KernelType::Dsv4RouterWeightsOne => emit_dsv4_router_weights_one_msl(out),
@@ -10191,6 +10480,10 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_argmax_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::ArgMax;
+                    } else if ctx.kernel_type == KernelType::MatvecF16 {
+                        // matvec THEN argmax in one function: fuse them, the
+                        // same way `matvec` + `add` becomes MatvecF16Add.
+                        ctx.kernel_type = KernelType::MatvecArgmaxF16;
                     }
                 }
                 "__tile_sample_top_p_f32" => {
@@ -10227,6 +10520,56 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_rope_dsv4_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::RopeDsv4;
+                    }
+                }
+                "__tile_dsv41_indexer_pack" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41IndexerPack;
+                    }
+                }
+                "__tile_dsv41_vision_bias_residual" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41VisionBiasResidual;
+                    }
+                }
+                "__tile_dsv41_vision_swiglu_split" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41VisionSwigluSplit;
+                    }
+                }
+                "__tile_dsv41_bf16_linear" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41Bf16Linear;
+                    }
+                }
+                "__tile_dsv41_moe_packed_offsets" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41MoePackedOffsets;
+                    }
+                }
+                "__tile_dsv41_pool2" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41Pool2;
+                    }
+                }
+                "__tile_dsv41_candidate_blocks" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41CandidateBlocks;
+                    }
+                }
+                "__tile_dsv41_candidate_filter" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41CandidateFilter;
+                    }
+                }
+                "__tile_dsv41_engram_add" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41EngramAdd;
+                    }
+                }
+                "__tile_dsv41_carry_copy" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::Dsv41CarryCopy;
                     }
                 }
                 "__tile_dsv4_ratio4_shift_f32" => {
@@ -10929,6 +11272,19 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_mul_mv_id_q4_K_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvIdQ4KF32;
+                    }
+                }
+                // Dense (non-id) Q4_K matvec. This arm was MISSING while every
+                // other part of the kernel existed -- KernelType variant, buffer
+                // count, both predicate lists, the emit dispatch and
+                // `emit_mul_mv_q4_K_f32_msl` itself -- so nothing ever selected
+                // it and the intrinsic fell through to the generic elementwise
+                // path, emitting `p1[gid] = p0[gid]` under the kernel's own
+                // name. An unreachable emitter arm is indistinguishable from a
+                // working one until something compiles or runs the output.
+                "__tile_mul_mv_q4_K_f32" => {
+                    if ctx.kernel_type == KernelType::Copy {
+                        ctx.kernel_type = KernelType::MulMvQ4KF32;
                     }
                 }
                 "__tile_mul_mv_id_iq2_xxs_f32" => {
@@ -12364,6 +12720,105 @@ fn emit_dequantize_msl(out: &mut String, msl_type: &str) {
 // ---------------------------------------------------------------------------
 
 /// ArgMax: one thread per row scans across cols for the column index of the max value.
+// ── fused lm_head + argmax (upstreamed from tilers_playground) ──
+
+/// FUSED lm_head + argmax, stage 1. The matvec's logits are never written to
+/// memory: each thread computes ONE output row's full dot product and keeps only
+/// the running best, so a vocab-wide scan costs the weights plus one
+/// (value, index) partial per threadgroup.
+///
+/// ONE ROW PER THREAD, grid = ceil(N / tcount). That is deliberately not the
+/// block-cyclic stripe the standalone two-stage argmax uses: with a row per
+/// thread there is nothing to loop over, so the kernel needs no
+/// `threadgroups_per_grid` attribute -- which the shared prologue does not emit.
+///
+/// The hand-written `lmhead_argmax_f16` in the tile_e2e engine is NOT the model
+/// for this. It casts its `half*` weight pointer to `float4*`, reading f16 data
+/// as f32, and generates garbage tokens ([12095, 129271, 79861, ...] against a
+/// correct [12095, 11, 323, 279, ...]); it survives because the fused path is
+/// opt-in and off by default. This emits `half4` loads.
+///
+/// Indices travel as f32 in p3. A vocabulary index is far below 2^24, so f32
+/// carries it exactly, and keeping every buffer f32-or-half lets this kernel
+/// reuse the emitter's existing mixed-precision buffer machinery unchanged.
+fn emit_matvec_argmax_f16_msl(out: &mut String) {
+    writeln!(out, "    // p0=activation(f32,K), p1=weight(half,N*K), p2=pv(f32,G), p3=pi(f32,G)").unwrap();
+    writeln!(out, "    // ONE SIMDGROUP PER ROW. The first version of this kernel gave one row").unwrap();
+    writeln!(out, "    // to one THREAD, which serialises the whole K-length dot product and").unwrap();
+    writeln!(out, "    // measured 2449 us against 662 for the unfused pipeline -- 3.7x SLOWER,").unwrap();
+    writeln!(out, "    // because the unfused matvec has a full threadgroup cooperating on each").unwrap();
+    writeln!(out, "    // row. The hand-written lmhead_argmax_f16 in the tile_e2e engine has the").unwrap();
+    writeln!(out, "    // same one-thread-per-row shape. 32 lanes now share a row and combine").unwrap();
+    writeln!(out, "    // with simd_sum, so the fusion keeps the matvec's parallelism and only").unwrap();
+    writeln!(out, "    // drops the logit store.").unwrap();
+    writeln!(out, "    // Dispatch: ceil(N / (tcount/32)) threadgroups; pv/pi sized to match.").unwrap();
+    writeln!(out, "    threadgroup float sv[64];").unwrap();
+    writeln!(out, "    threadgroup float si[64];").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "    uint nsg = tpg / 32u;").unwrap();
+    writeln!(out, "    uint n = gid * nsg + simd_id;").unwrap();
+    writeln!(out, "    float acc = 0.0f;").unwrap();
+    writeln!(out, "    if (n < N) {{").unwrap();
+    writeln!(out, "        if ((K & 3u) == 0u) {{").unwrap();
+    writeln!(out, "            uint K4 = K >> 2;").unwrap();
+    writeln!(out, "            device const float4* a4 = (device const float4*) p0;").unwrap();
+    writeln!(out, "            device const half4*  w4 = (device const half4*) (p1 + n * K);").unwrap();
+    writeln!(out, "            for (uint i = simd_lane; i < K4; i += 32u) acc += dot(a4[i], float4(w4[i]));").unwrap();
+    writeln!(out, "        }} else {{").unwrap();
+    writeln!(out, "            for (uint i = simd_lane; i < K; i += 32u) acc += p0[i] * float(p1[n * K + i]);").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    acc = simd_sum(acc);").unwrap();
+    writeln!(out, "    if (simd_lane == 0u) {{").unwrap();
+    writeln!(out, "        sv[simd_id] = (n < N) ? acc : -MAXFLOAT;").unwrap();
+    writeln!(out, "        si[simd_id] = (float) n;").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
+    writeln!(out, "    // fold this group's nsg rows; lowest index wins a tie").unwrap();
+    writeln!(out, "    if (tid == 0u) {{").unwrap();
+    writeln!(out, "        float bv = sv[0]; float bi = si[0];").unwrap();
+    writeln!(out, "        for (uint s = 1u; s < nsg; s++) {{").unwrap();
+    writeln!(out, "            if (sv[s] > bv || (sv[s] == bv && si[s] < bi)) {{ bv = sv[s]; bi = si[s]; }}").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        p2[gid] = bv; p3[gid] = bi;").unwrap();
+    writeln!(out, "    }}").unwrap();
+}
+
+/// Stage 2 for the fused lm_head+argmax: folds the G partials to one index.
+/// Separate from `<name>_final` above because the fused stage 1 carries indices
+/// as f32 (see `emit_matvec_argmax_f16_msl`).
+fn emit_argmax_fused_final_msl(out: &mut String, name: &str) {
+    writeln!(out).unwrap();
+    writeln!(out, "// fused lm_head+argmax stage 2: fold G partials to the token index.").unwrap();
+    writeln!(out, "kernel void {name}_final(").unwrap();
+    writeln!(out, "    device const float* pv [[ buffer(0) ]],").unwrap();
+    writeln!(out, "    device const float* pi [[ buffer(1) ]],").unwrap();
+    writeln!(out, "    device float* out_idx [[ buffer(2) ]],").unwrap();
+    writeln!(out, "    constant uint& ngroups [[ buffer(3) ]],").unwrap();
+    writeln!(out, "    uint tid [[ thread_index_in_threadgroup ]],").unwrap();
+    writeln!(out, "    uint tcount [[ threads_per_threadgroup ]])").unwrap();
+    writeln!(out, "{{").unwrap();
+    writeln!(out, "    threadgroup float sv[1024];").unwrap();
+    writeln!(out, "    threadgroup float si[1024];").unwrap();
+    writeln!(out, "    float best = -MAXFLOAT;").unwrap();
+    writeln!(out, "    float bidx = 3.4e38f;").unwrap();
+    writeln!(out, "    for (uint i = tid; i < ngroups; i += tcount) {{").unwrap();
+    writeln!(out, "        float v = pv[i];").unwrap();
+    writeln!(out, "        if (v > best || (v == best && pi[i] < bidx)) {{ best = v; bidx = pi[i]; }}").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    sv[tid] = best;").unwrap();
+    writeln!(out, "    si[tid] = bidx;").unwrap();
+    writeln!(out, "    threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
+    writeln!(out, "    for (uint s = tcount / 2u; s > 0u; s >>= 1) {{").unwrap();
+    writeln!(out, "        if (tid < s && (sv[tid + s] > sv[tid] || (sv[tid + s] == sv[tid] && si[tid + s] < si[tid]))) {{").unwrap();
+    writeln!(out, "            sv[tid] = sv[tid + s]; si[tid] = si[tid + s];").unwrap();
+    writeln!(out, "        }}").unwrap();
+    writeln!(out, "        threadgroup_barrier(mem_flags::mem_threadgroup);").unwrap();
+    writeln!(out, "    }}").unwrap();
+    writeln!(out, "    if (tid == 0u) out_idx[0] = si[0];").unwrap();
+    writeln!(out, "}}").unwrap();
+}
+
 fn emit_argmax_msl(out: &mut String, msl_type: &str) {
     writeln!(
         out,

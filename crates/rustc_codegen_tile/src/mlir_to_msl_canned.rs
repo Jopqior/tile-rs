@@ -1817,6 +1817,235 @@ pub(super) fn emit_dsv4_rope_tail_f32_msl(out: &mut String) {
 /// Two state buffers (state_kv, state_score) of length 8*width. Shift second half down to first half:
 ///   state[i] = state[4*width + i] for i in [0, 4*width).
 /// Buffers: p0=state_kv, p1=state_score. Param: width. Dispatch: 1D grid over n=4*width threads.
+/// V4.1 carry between packed and plain representations (kernel_dsv41_carry_copy).
+/// V4.1 engram contribution (kernel_dsv41_engram_add).
+/// V4.1 candidate block maxima (kernel_dsv41_candidate_blocks).
+/// V4.1 in-place bf16 rounding of a whole buffer (kernel_dsv41_bf16_linear).
+/// V4.1 vision bias + residual, bf16-rounded at both steps.
+/// V4.1 indexer bfloat packing with an exactness flag (kernel_dsv41_indexer_pack).
+///
+/// The flag is the point: it records whether every element of the group survived
+/// the round trip to bfloat, so a later kernel can choose the packed path only
+/// where it is lossless.
+pub(super) fn emit_dsv41_indexer_pack_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "threadgroup uint valid[4];");
+    l(out, "const uint grp = row;");
+    l(out, "const bool query = grp < query_count;");
+    l(out, "const uint count = query ? (32u * 128u) : (64u * 128u);");
+    l(out, "const ulong offset = query ? (ulong)grp * (ulong)count");
+    l(out, "                           : (ulong)(grp - query_count) * (ulong)count;");
+    l(out, "device bfloat * pq = (device bfloat *)p3;");
+    l(out, "device bfloat * pk = (device bfloat *)p4;");
+    l(out, "device uint   * fl = (device uint   *)p2;");
+    l(out, "bool exact = true;");
+    l(out, "for (uint i = tid; i < count; i += 128u) {");
+    l(out, "    // keys past the real extent are padded with zero rather than read");
+    l(out, "    const float value = query ? p0[offset + i]");
+    l(out, "        : ((offset + i < (ulong)key_count * 128ul) ? p1[offset + i] : 0.0f);");
+    l(out, "    const bfloat converted = bfloat(value);");
+    l(out, "    if (query) pq[offset + i] = converted; else pk[offset + i] = converted;");
+    l(out, "    exact = exact && (float(converted) == value);");
+    l(out, "}");
+    l(out, "const bool same = simd_all(exact);");
+    l(out, "if ((tid % 32u) == 0u) valid[tid / 32u] = same ? 1u : 0u;");
+    l(out, "threadgroup_barrier(mem_flags::mem_threadgroup);");
+    l(out, "if (tid == 0u)");
+    l(out, "    fl[grp] = (valid[0] && valid[1] && valid[2] && valid[3]) ? 1u : 0u;");
+}
+
+pub(super) fn emit_dsv41_vision_bias_residual_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "#define VBF16(v) (((as_type<uint>(v) & 0x7f800000u) == 0x7f800000u) ? (v)            \\");
+    l(out, "    : as_type<float>((as_type<uint>(v) + 0x7fffu + ((as_type<uint>(v) >> 16u) & 1u)) \\");
+    l(out, "      & 0xffff0000u))");
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint x = gid % width;");
+    l(out, "const uint y = gid / width;");
+    l(out, "if (y >= rows) return;");
+    l(out, "const ulong off = (ulong)y * (ulong)width + x;");
+    l(out, "// the bias is stored as bf16 halves; widen by shifting into the high bits");
+    l(out, "device const ushort * bias = (device const ushort *)p1;");
+    l(out, "const float b = as_type<float>((uint)bias[x] << 16);");
+    l(out, "const float projected = VBF16(p0[off] + b);");
+    l(out, "p0[off] = VBF16(projected + p2[off]);");
+    l(out, "#undef VBF16");
+}
+
+/// V4.1 vision SwiGLU split. Unlike the V4 variant this rounds the SiLU result
+/// to bf16 BEFORE multiplying by `up`.
+pub(super) fn emit_dsv41_vision_swiglu_split_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "#define VBF16(v) (((as_type<uint>(v) & 0x7f800000u) == 0x7f800000u) ? (v)            \\");
+    l(out, "    : as_type<float>((as_type<uint>(v) + 0x7fffu + ((as_type<uint>(v) >> 16u) & 1u)) \\");
+    l(out, "      & 0xffff0000u))");
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint x = gid % width;");
+    l(out, "const uint y = gid / width;");
+    l(out, "if (y >= rows) return;");
+    l(out, "const ulong source = (ulong)y * (ulong)width * 2ul + x;");
+    l(out, "const float gate = p0[source];");
+    l(out, "const float up   = p0[source + (ulong)width];");
+    l(out, "float activated = gate / (1.0f + exp(-gate));");
+    l(out, "activated = VBF16(activated);");
+    l(out, "p1[(ulong)y * (ulong)width + x] = VBF16(activated * up);");
+    l(out, "#undef VBF16");
+}
+
+pub(super) fn emit_dsv41_bf16_linear_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "// p0 is declared float* by the framework but holds BITS here — reinterpret.");
+    l(out, "device uint * x = (device uint *)p0;");
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint first = gid * 4u;");
+    l(out, "if (first + 4u <= count) {");
+    l(out, "    uint4 bits = *((device uint4 *)(x + first));");
+    l(out, "    const bool4 finite = (bits & 0x7f800000u) != 0x7f800000u;");
+    l(out, "    bits += select(uint4(0u), uint4(0x7fffu) + ((bits >> 16u) & 1u), finite);");
+    l(out, "    *((device uint4 *)(x + first)) = bits & 0xffff0000u;");
+    l(out, "} else {");
+    l(out, "    for (uint i = first; i < count; ++i) {");
+    l(out, "        uint bits = x[i];");
+    l(out, "        if ((bits & 0x7f800000u) != 0x7f800000u)");
+    l(out, "            bits += 0x7fffu + ((bits >> 16u) & 1u);");
+    l(out, "        x[i] = bits & 0xffff0000u;");
+    l(out, "    }");
+    l(out, "}");
+}
+
+/// V4.1 exclusive prefix sum over per-expert counts (kernel_moe_packed_offsets).
+pub(super) fn emit_dsv41_moe_packed_offsets_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "// Serial by design: one thread walks the counts. Both buffers hold BITS.");
+    l(out, "if (row != 0u || tid != 0u) return;");
+    l(out, "device const uint * counts  = (device const uint *)p0;");
+    l(out, "device uint       * offsets = (device uint *)p1;");
+    l(out, "uint acc = 0u;");
+    l(out, "for (uint e = 0u; e < experts; ++e) {");
+    l(out, "    offsets[e] = acc;");
+    l(out, "    acc += counts[e];");
+    l(out, "}");
+}
+
+/// V4.1 softmax-weighted pooling of adjacent KV pairs (kernel_dsv41_pool2).
+pub(super) fn emit_dsv41_pool2_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "#define DSV41_BF16(v) as_type<float>((((as_type<uint>(v) & 0x7f800000u) != 0x7f800000u) \\");
+    l(out, "    ? (as_type<uint>(v) + 0x7fffu + ((as_type<uint>(v) >> 16u) & 1u))                   \\");
+    l(out, "    : as_type<uint>(v)) & 0xffff0000u)");
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint x = gid % width;");
+    l(out, "const uint y = gid / width;");
+    l(out, "if (y >= pairs) return;");
+    l(out, "// a < 0 reaches back into the previous chunk's tail");
+    l(out, "const int  a = (int)(y * 2u) - (int)tail;");
+    l(out, "const ulong b = (ulong)(a + 1) * (ulong)width + x;");
+    l(out, "const float ka = a < 0 ? p3[x] : p1[(ulong)a * (ulong)width + x];");
+    l(out, "const float sa = a < 0 ? p4[x] : p2[(ulong)a * (ulong)width + x];");
+    l(out, "const float sb = p2[b];");
+    l(out, "const float peak = max(sa, sb);");
+    l(out, "const float ea = exp(sa - peak), eb = exp(sb - peak);");
+    l(out, "p0[(ulong)y * (ulong)width + x] = DSV41_BF16((ka * ea + p1[b] * eb) / (ea + eb));");
+    l(out, "#undef DSV41_BF16");
+}
+
+pub(super) fn emit_dsv41_candidate_blocks_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "const uint count = (width + 7u) / 8u;");
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint x = gid % count;");
+    l(out, "const uint y = gid / count;");
+    l(out, "if (y >= rows) return;");
+    l(out, "// causal frontier for this row");
+    l(out, "const uint visible = min(width, (start + y + 1u) / ratio);");
+    l(out, "float best = -INFINITY;");
+    l(out, "const uint hi = min(visible, (x + 1u) * 8u);");
+    l(out, "for (uint i = x * 8u; i < hi; ++i)");
+    l(out, "    best = max(best, p0[(ulong)y * (ulong)width + i]);");
+    l(out, "// the block holding the frontier is always admissible");
+    l(out, "if (visible != 0u && x == (visible - 1u) / 8u) best = INFINITY;");
+    l(out, "p1[(ulong)y * (ulong)count + x] = best;");
+}
+
+/// V4.1 candidate filter (kernel_dsv41_candidate_filter).
+pub(super) fn emit_dsv41_candidate_filter_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "const uint gid = row * tcount + tid;");
+    l(out, "const uint x = gid % width;");
+    l(out, "const uint y = gid / width;");
+    l(out, "if (y >= rows) return;");
+    l(out, "const ulong offset = (ulong)y * (ulong)width + x;");
+    l(out, "const uint blocks = (width + 7u) / 8u;");
+    l(out, "const uint visible = min(width, (start + y + 1u) / ratio);");
+    l(out, "p1[offset] = (x < visible && p2[(ulong)y * (ulong)blocks + x / 8u] == 0.0f)");
+    l(out, "    ? p0[offset] : -INFINITY;");
+}
+
+pub(super) fn emit_dsv41_engram_add_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    // Round-to-nearest-even bf16, as `dsv41_bf16` upstream. carry_copy TRUNCATES
+    // instead — do not merge the two.
+    l(out, "#define DSV41_BF16(x) as_type<float>((((as_type<uint>(x) & 0x7f800000u) != 0x7f800000u) \\");
+    l(out, "    ? (as_type<uint>(x) + 0x7fffu + ((as_type<uint>(x) >> 16u) & 1u))                   \\");
+    l(out, "    : as_type<uint>(x)) & 0xffff0000u)");
+    l(out, "const uint token   = row / 4u;");
+    l(out, "const uint sub_row = row % 4u;");
+    l(out, "device const uchar * engram_mask = (device const uchar *)p4;");
+    l(out, "if (masked != 0u && engram_mask[token] == 0u) return;");
+    l(out, "const ulong offset       = ((ulong)token * 4ul + (ulong)sub_row) * (ulong)width;");
+    l(out, "const ulong key_offset   = ((ulong)token * 5ul + (ulong)sub_row) * (ulong)width;");
+    l(out, "const ulong value_offset = ((ulong)token * 5ul + 4ul) * (ulong)width;");
+    l(out, "float h2 = 0.0f, k2 = 0.0f, dot = 0.0f;");
+    l(out, "for (uint i = simd_lane; i < width; i += 32u) {");
+    l(out, "    const float h = p0[offset + i];");
+    l(out, "    const float k = DSV41_BF16(p1[key_offset + i]);");
+    l(out, "    const uint  wi = sub_row * width + i;");
+    l(out, "    h2  += h * h;");
+    l(out, "    k2  += k * k;");
+    l(out, "    dot += h * (p2[wi] * p3[wi]) * k;");
+    l(out, "}");
+    l(out, "h2 = simd_sum(h2);");
+    l(out, "k2 = simd_sum(k2);");
+    l(out, "dot = simd_sum(dot) * rsqrt(h2 / (float)width + eps) *");
+    l(out, "      rsqrt(k2 / (float)width + eps) * rsqrt((float)width);");
+    l(out, "const float gate = 1.0f / (1.0f + exp(-copysign(sqrt(max(abs(dot), 1.0e-6f)), dot)));");
+    l(out, "for (uint i = simd_lane; i < width; i += 32u)");
+    l(out, "    p0[offset + i] = DSV41_BF16(p0[offset + i] + gate * DSV41_BF16(p1[value_offset + i]));");
+    l(out, "#undef DSV41_BF16");
+}
+
+pub(super) fn emit_dsv41_carry_copy_msl(out: &mut String) {
+    let l = |o: &mut String, t: &str| { o.push_str("    "); o.push_str(t); o.push('\n'); };
+    l(out, "const uint blocks_per_row = (width + 127u) / 128u;");
+    l(out, "const uint r   = row / blocks_per_row;");
+    l(out, "const uint blk = row % blocks_per_row;");
+    l(out, "const uint col = blk * 128u + tid;");
+    l(out, "if (format == 0u) {");
+    l(out, "    // bf16 carry: keep the high half of each f32, or restore it");
+    l(out, "    if (col >= width) return;");
+    l(out, "    device ushort * pk = (device ushort *)((device char *)p0 + (ulong)r * (ulong)words * 4ul);");
+    l(out, "    if (pack != 0u) {");
+    l(out, "        pk[col] = ushort(as_type<uint>(p1[(ulong)r * (ulong)width + col]) >> 16);");
+    l(out, "    } else {");
+    l(out, "        p1[(ulong)r * (ulong)width + col] = as_type<float>(uint(pk[col]) << 16);");
+    l(out, "    }");
+    l(out, "} else {");
+    l(out, "    // allowed-mask carry: one bit per column, 32 columns per word");
+    l(out, "    const uint word = col / 32u;");
+    l(out, "    // p0 is declared float* by the framework, but a mask word is BITS. Reinterpret");
+    l(out, "    // rather than index it as float: `p0[i] = bits` would numerically CONVERT.");
+    l(out, "    device uint * mk = (device uint *)p0;");
+    l(out, "    if (pack != 0u) {");
+    l(out, "        const bool allowed = col < width && p1[(ulong)r * (ulong)width + col] == 0.0f;");
+    l(out, "        const uint bits = simd_sum(allowed ? (1u << simd_lane) : 0u);");
+    l(out, "        if (simd_lane == 0u && word < words) mk[(ulong)r * (ulong)words + word] = bits;");
+    l(out, "    } else if (col < width) {");
+    l(out, "        const uint bits = mk[(ulong)r * (ulong)words + word];");
+    l(out, "        p1[(ulong)r * (ulong)width + col] = (bits & (1u << simd_lane)) ? 0.0f : -INFINITY;");
+    l(out, "    }");
+    l(out, "}");
+}
+
 pub(super) fn emit_dsv4_ratio4_shift_msl(out: &mut String) {
     writeln!(out, "    uint gid = row * tcount + tid;").unwrap();
     writeln!(out, "    uint n = 4u * width;").unwrap();
