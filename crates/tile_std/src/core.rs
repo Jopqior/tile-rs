@@ -4,8 +4,9 @@
 
 // The crate root (lib.rs) already carries `#![rustc_coherence_is_core]`. Older
 // nightlies also accepted it on this module; the 1.99 cycle restricts it to the
-// crate root, so omit the redundant module-level copy there.
-#![cfg_attr(not(rustc_1_99_core), rustc_coherence_is_core)]
+// crate root (build.rs `rustc_coherence_root_only`), so omit the redundant
+// module-level copy there.
+#![cfg_attr(not(rustc_coherence_root_only), rustc_coherence_is_core)]
 
 pub mod marker {
     // region:sized
@@ -599,9 +600,9 @@ pub mod ptr {
     use crate::marker::Unpin;
 
     // region:drop
-    // The `drop_in_place` lang item was renamed to `drop_glue` in the 1.99 cycle.
-    #[cfg_attr(rustc_1_99_core, lang = "drop_glue")]
-    #[cfg_attr(not(rustc_1_99_core), lang = "drop_in_place")]
+    // The `drop_in_place` lang item was renamed to `drop_glue` (build.rs `rustc_drop_glue_lang`).
+    #[cfg_attr(rustc_drop_glue_lang, lang = "drop_glue")]
+    #[cfg_attr(not(rustc_drop_glue_lang), lang = "drop_in_place")]
     pub unsafe fn drop_in_place<T: PointeeSized>(_to_drop: *mut T) {
         // unsafe { drop_in_place(to_drop) }
     }
@@ -644,8 +645,8 @@ pub mod ptr {
     // `rustc_layout_scalar_valid_range_start` was removed in the 1.99 cycle (core
     // moved the null niche to pattern types). Keep it where it exists for the
     // layout optimization; dropping it on 1.99 leaves NonNull correct, just without
-    // the `Option<NonNull>` niche. See build.rs `rustc_1_99_core`.
-    #[cfg_attr(not(rustc_1_99_core), rustc_layout_scalar_valid_range_start(1))]
+    // the `Option<NonNull>` niche. See build.rs `rustc_layout_range_attr_removed`.
+    #[cfg_attr(not(rustc_layout_range_attr_removed), rustc_layout_scalar_valid_range_start(1))]
     #[rustc_nonnull_optimization_guaranteed]
     pub struct NonNull<T: crate::core::marker::PointeeSized> {
         pointer: *const T,
@@ -809,10 +810,12 @@ pub mod intrinsics {
     pub const fn truncf32(x: f32) -> f32;
     // `fabsf32` intrinsic was removed by 2026-04-01 (and is unused here), so omit
     // it there; keep it on the safe-const nightlies that still provide it.
-    #[cfg(all(rustc_float_intrinsics_safe, not(rustc_fabsf32_removed)))]
+    // `fabsf32` and `copysignf32` became safe a day after the others (build.rs
+    // `rustc_sign_intrinsics_safe`).
+    #[cfg(all(rustc_sign_intrinsics_safe, not(rustc_fabsf32_removed)))]
     #[rustc_intrinsic]
     pub const fn fabsf32(x: f32) -> f32;
-    #[cfg(rustc_float_intrinsics_safe)]
+    #[cfg(rustc_sign_intrinsics_safe)]
     #[rustc_intrinsic]
     pub const fn copysignf32(x: f32, y: f32) -> f32;
     #[cfg(rustc_float_intrinsics_safe)]
@@ -830,10 +833,10 @@ pub mod intrinsics {
     #[cfg(not(rustc_float_intrinsics_safe))]
     #[rustc_intrinsic]
     pub unsafe fn truncf32(x: f32) -> f32;
-    #[cfg(not(rustc_float_intrinsics_safe))]
+    #[cfg(not(rustc_sign_intrinsics_safe))]
     #[rustc_intrinsic]
     pub unsafe fn fabsf32(x: f32) -> f32;
-    #[cfg(not(rustc_float_intrinsics_safe))]
+    #[cfg(not(rustc_sign_intrinsics_safe))]
     #[rustc_intrinsic]
     pub unsafe fn copysignf32(x: f32, y: f32) -> f32;
     #[cfg(not(rustc_float_intrinsics_safe))]
@@ -3434,8 +3437,8 @@ pub mod macros {
 // region:non_zero
 pub mod num {
     #[repr(transparent)]
-    // Removed in 1.99 (see NonNull above / build.rs `rustc_1_99_core`).
-    #[cfg_attr(not(rustc_1_99_core), rustc_layout_scalar_valid_range_start(1))]
+    // Removed in 1.99 (see NonNull above / build.rs `rustc_layout_range_attr_removed`).
+    #[cfg_attr(not(rustc_layout_range_attr_removed), rustc_layout_scalar_valid_range_start(1))]
     #[rustc_nonnull_optimization_guaranteed]
     pub struct NonZeroU8(u8);
 

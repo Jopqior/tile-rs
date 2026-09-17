@@ -2,67 +2,55 @@
 //! `#![no_core]` surface can track compiler-internal renames while still
 //! building on the pinned `nightly-2025-08-04`.
 //!
-//! Add a new gate here (mirroring the pattern below) whenever a lang item,
-//! intrinsic, or `rustc_*` attribute changes name/shape across the supported
-//! nightly range, then `#[cfg]` the two spellings in `src/core.rs`.
+//! One gate per compiler change. Each date is the first commit date at which the
+//! new spelling is required, measured with
+//! `scripts/nightly_drift_check.py --bisect FROM TO --signature '<error text>'`,
+//! and `scripts/nightly_drift_check.py --only gates` checks the nightlies on both
+//! sides of every gate. Add a gate the same way, then `#[cfg]` the two spellings
+//! in `src/core.rs`.
 
 use std::process::Command;
 
+/// (cfg name, first commit date that needs the new spelling)
+const GATES: &[(&str, (u32, u32, u32))] = &[
+    // `#![rustc_coherence_is_core]` is rejected on modules; only the crate root
+    // (lib.rs) may carry it. Bisected: 2025-08-13 accepts, 2025-08-14 rejects.
+    ("rustc_coherence_root_only", (2025, 8, 14)),
+    // Scalar float intrinsics (floorf32, ceilf32, roundf32, truncf32, fmaf32,
+    // sqrtf32, expf32, logf32) became `safe` (the rounding ones also `const`).
+    // Bisected: safety mismatches under the unsafe spelling start at 2025-09-22.
+    ("rustc_float_intrinsics_safe", (2025, 9, 22)),
+    // `fabsf32` and `copysignf32` became `safe const` separately. Measured: still
+    // unsafe at 2025-09-23, safe at 2025-09-24.
+    ("rustc_sign_intrinsics_safe", (2025, 9, 24)),
+    // `#[rustc_do_not_implement_via_object]` renamed `#[rustc_dyn_incompatible_trait]`.
+    // Bisected: the old name is unknown from 2026-01-21.
+    ("rustc_dyn_incompatible_trait_attr", (2026, 1, 21)),
+    // The `fabsf32` intrinsic was removed. It is unused here, so omitting its
+    // declaration early is harmless; both sides of this date check clean.
+    ("rustc_fabsf32_removed", (2026, 3, 15)),
+    // `#[rustc_layout_scalar_valid_range_start]` removed (NonNull/NonZero use
+    // pattern types). Still accepted on 2026-04-30; both sides of this date check
+    // clean. Omitting it only loses the `Option<NonNull>` niche.
+    ("rustc_layout_range_attr_removed", (2026, 5, 1)),
+    // `#[lang = "drop_in_place"]` renamed `#[lang = "drop_glue"]`. Bisected: `drop_glue`
+    // is unknown through 2026-05-06 and required from 2026-05-07.
+    ("rustc_drop_glue_lang", (2026, 5, 7)),
+    // `expf32`/`logf32` became generic `exp<T>`/`log<T>` (rust-lang/rust #162117,
+    // merged 2026-09-01 15:38 UTC, inside the nightly with commit date 2026-09-01).
+    // Unused here, so omitted rather than ported.
+    ("rustc_float_math_generic", (2026, 9, 1)),
+];
+
 fn main() {
     let date = rustc_commit_date();
-
-    println!("cargo::rustc-check-cfg=cfg(rustc_dyn_incompatible_trait_attr)");
-    println!("cargo::rustc-check-cfg=cfg(rustc_float_intrinsics_safe)");
-    println!("cargo::rustc-check-cfg=cfg(rustc_1_99_core)");
-    println!("cargo::rustc-check-cfg=cfg(rustc_fabsf32_removed)");
-    println!("cargo::rustc-check-cfg=cfg(rustc_float_math_generic)");
-
-    // The `fabsf32` intrinsic was removed earlier than the rest of the 1.99 churn:
-    // present on 2026-03-01, gone by 2026-04-01. Gate at 2026-03-15. It is unused
-    // here, so it is simply omitted once absent.
-    let fabsf32_removed = matches!(date, Some(d) if d >= (2026, 3, 15));
-    if fabsf32_removed {
-        println!("cargo::rustc-cfg=rustc_fabsf32_removed");
-    }
-
-    // The 1.99 nightly cycle (2026-05+) reworked several core internals used by
-    // this no_core surface, all absent on 2026-04-09 and present by 2026-07-14
-    // (gate at 2026-05-01):
-    //   - `#[rustc_layout_scalar_valid_range_start]` removed (NonNull/NonZero now
-    //     use pattern types); dropping it keeps them correct, minus the niche opt.
-    //   - `#[lang = "drop_in_place"]` renamed to `#[lang = "drop_glue"]`.
-    //   - `#![rustc_coherence_is_core]` restricted to the crate root only.
-    let rustc_1_99 = matches!(date, Some(d) if d >= (2026, 5, 1));
-    if rustc_1_99 {
-        println!("cargo::rustc-cfg=rustc_1_99_core");
-    }
-
-    // The scalar float intrinsics (sqrtf32, expf32, floorf32, ...) changed from
-    // `unsafe fn` to `safe [const] fn` right after the pinned toolchain: they are
-    // still `unsafe` on 2025-08-04 but `safe` by 2025-11-24. Gate at 2025-09-01.
-    let float_intrinsics_safe = matches!(date, Some(d) if d >= (2025, 9, 1));
-    if float_intrinsics_safe {
-        println!("cargo::rustc-cfg=rustc_float_intrinsics_safe");
-    }
-
-    // `expf32`/`logf32` (and sin, cos, exp2, log2, log10) became generic
-    // `exp<T>`/`log<T>` intrinsics over a `FloatPrimitive` bound in rust-lang/rust
-    // #162117, merged 2026-09-01 15:38 UTC. A nightly whose commit date is
-    // 2026-09-01 may predate the merge, so gate at 2026-09-02. They are unused
-    // here, so they are omitted rather than ported to the generic form.
-    let float_math_generic = matches!(date, Some(d) if d >= (2026, 9, 2));
-    if float_math_generic {
-        println!("cargo::rustc-cfg=rustc_float_math_generic");
-    }
-
-    // The `#[rustc_do_not_implement_via_object]` marker attribute was renamed to
-    // `#[rustc_dyn_incompatible_trait]`. It is absent on 2026-01-20 and present
-    // by 2026-02-28, so gate at 2026-02-01. When the commit date is unknown
-    // (stable rustc, or `--version --verbose` unavailable) assume the pinned
-    // older toolchain and keep the legacy spelling.
-    let has_new_attr = matches!(date, Some(d) if d >= (2026, 2, 1));
-    if has_new_attr {
-        println!("cargo::rustc-cfg=rustc_dyn_incompatible_trait_attr");
+    for (name, since) in GATES {
+        println!("cargo::rustc-check-cfg=cfg({name})");
+        // An unknown commit date (stable rustc, or no `--version --verbose`) keeps
+        // every legacy spelling, matching the pinned toolchain.
+        if matches!(date, Some(d) if d >= *since) {
+            println!("cargo::rustc-cfg={name}");
+        }
     }
 }
 
