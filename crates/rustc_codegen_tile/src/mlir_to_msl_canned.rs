@@ -859,7 +859,8 @@ pub(super) fn emit_laguna_head_rms_norm_rope_neox_msl(out: &mut String) {
 /// over blocks, simd_sum gives the row dot. rows_per_simd=2, simd_groups=2.
 /// Buffers: p0=weight (char), p1=x (float), p2=out (float). Uniforms: in_dim,
 /// out_dim, n_tokens, row_bytes (ulong). Grid (needs_3d_grid_simd).
-pub(super) fn emit_laguna_q8_0_matvec_f32_msl(out: &mut String) {
+pub(super) fn emit_laguna_q8_0_matvec_f32_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     // antirez-style Q8_0 matvec (kernel_mul_mv_q8_0_f32, dense.metal): each simdgroup
     // computes NR0 rows, reusing the NQ=8 contiguous activations (yl) loaded once per
     // block across all NR0 rows; NSG independent simdgroups/threadgroup for occupancy.
@@ -868,17 +869,17 @@ pub(super) fn emit_laguna_q8_0_matvec_f32_msl(out: &mut String) {
     // (vs the old 1-element/lane strided reads, 32x-redundant d[] loads).
     writeln!(
         out,
-        "    constexpr uint NR0 = 4u;               // rows per simdgroup (activation reuse)"
+        "    constexpr uint NR0 = {nr0}u;               // rows per simdgroup (activation reuse)"
     )
     .unwrap();
     writeln!(
         out,
-        "    constexpr uint NSG = 4u;               // simdgroups per threadgroup"
+        "    constexpr uint NSG = {nsg}u;               // simdgroups per threadgroup"
     )
     .unwrap();
     writeln!(
         out,
-        "    constexpr uint NQ  = 8u;               // contiguous quants per lane"
+        "    constexpr uint NQ  = {nq}u;               // contiguous quants per lane"
     )
     .unwrap();
     writeln!(
@@ -913,7 +914,7 @@ pub(super) fn emit_laguna_q8_0_matvec_f32_msl(out: &mut String) {
         "    const uint il = lane % (QK8 / NQ);     // 8-elem chunk of that block (0..3)"
     )
     .unwrap();
-    writeln!(out, "    float sumf[NR0] = {{0.0f, 0.0f, 0.0f, 0.0f}};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{{zeros}}};").unwrap();
     writeln!(
         out,
         "    device const float *yb = input + ix * QK8 + il * NQ;"

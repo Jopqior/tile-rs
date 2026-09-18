@@ -817,7 +817,11 @@ pub(crate) const LAGUNA_KERNELS: &[LagunaEmitter] = &[
     ("laguna_q5_K_matvec_f32", emit_laguna_q5_K_matvec_f32_msl, true),
     ("laguna_q4_K_matvec_f32", emit_laguna_q4_K_matvec_f32_msl, true),
     ("laguna_q6_K_matmul_f32", emit_laguna_q6_K_matmul_f32_msl, true),
-    ("laguna_q8_0_matvec_f32", emit_laguna_q8_0_matvec_f32_msl, true),
+    (
+        "laguna_q8_0_matvec_f32",
+        |o: &mut String| emit_laguna_q8_0_matvec_f32_msl(o, Q8_0_MV_NSG, WIDE_MV_NR0, Q8_0_MV_NQ),
+        true,
+    ),
     (
         "laguna_q4_K_routed_down_f32",
         emit_laguna_q4_K_routed_down_f32_msl,
@@ -8766,7 +8770,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::LagunaQ5KMatvecF32 => emit_laguna_q5_K_matvec_f32_msl(out),
         KernelType::LagunaQ4KMatvecF32 => emit_laguna_q4_K_matvec_f32_msl(out),
         KernelType::LagunaQ6KMatmulF32 => emit_laguna_q6_K_matmul_f32_msl(out),
-        KernelType::LagunaQ8_0MatvecF32 => emit_laguna_q8_0_matvec_f32_msl(out),
+        KernelType::LagunaQ8_0MatvecF32 => {
+            let (nsg, nr0, nq) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1], v[2]),
+                None => (Q8_0_MV_NSG, WIDE_MV_NR0, Q8_0_MV_NQ),
+            };
+            check_q8_0_mv_split("laguna_q8_0_matvec_f32", nsg, nr0, nq)?;
+            emit_laguna_q8_0_matvec_f32_msl(out, nsg, nr0, nq)
+        }
         KernelType::LagunaQ4KRoutedDownF32 => emit_laguna_q4_K_routed_down_f32_msl(out),
         KernelType::LagunaQ6KRoutedDownF32 => emit_laguna_q6_K_routed_down_f32_msl(out),
         KernelType::LagunaQ4KPairSwigluF32 => emit_laguna_q4_K_pair_swiglu_f32_msl(out),
@@ -11958,6 +11969,14 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_laguna_q8_0_matvec_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::LagunaQ8_0MatvecF32;
+                        // How the work is split over simdgroups, rows, and lanes.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            3,
+                            &["nsg", "nr0", "nq"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_laguna_q4_K_routed_down_f32" => {
@@ -27122,12 +27141,12 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_laguna_q8_0_matvec_f32_msl() {
         check(
-            |o| emit_laguna_q8_0_matvec_f32_msl(o),
+            |o| emit_laguna_q8_0_matvec_f32_msl(o, Q8_0_MV_NSG, WIDE_MV_NR0, Q8_0_MV_NQ),
             "for (uint i = 0u; i < NQ; i++) sq += (float)qs[i] * yl[i];",
             "emit_laguna_q8_0_matvec_f32_msl",
         );
         check(
-            |o| emit_laguna_q8_0_matvec_f32_msl(o),
+            |o| emit_laguna_q8_0_matvec_f32_msl(o, Q8_0_MV_NSG, WIDE_MV_NR0, Q8_0_MV_NQ),
             "p2[(uint64_t)token * out_dim + row0 + r] = sum;",
             "emit_laguna_q8_0_matvec_f32_msl#store",
         );
