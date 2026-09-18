@@ -855,10 +855,16 @@ pub(crate) const LAGUNA_KERNELS: &[LagunaEmitter] = &[
     ),
     (
         "laguna_attn_output_residual_f32",
-        emit_laguna_attn_output_residual_f32_msl,
+        |o: &mut String| {
+            emit_laguna_attn_output_residual_f32_msl(o, LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF)
+        },
         true,
     ),
-    ("laguna_qkvg_f16_f32", emit_laguna_qkvg_f16_f32_msl, true),
+    (
+        "laguna_qkvg_f16_f32",
+        |o: &mut String| emit_laguna_qkvg_f16_f32_msl(o, LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
+        true,
+    ),
     (
         "laguna_attention_decode_gqa_f16",
         |o: &mut String| emit_laguna_attention_decode_gqa_f16_msl(o, LAGUNA_DECODE_DS4_SPLIT),
@@ -8764,8 +8770,22 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::LagunaQ4KRoutedDownF32 => emit_laguna_q4_K_routed_down_f32_msl(out),
         KernelType::LagunaQ6KRoutedDownF32 => emit_laguna_q6_K_routed_down_f32_msl(out),
         KernelType::LagunaQ4KPairSwigluF32 => emit_laguna_q4_K_pair_swiglu_f32_msl(out),
-        KernelType::LagunaAttnOutResidualF32 => emit_laguna_attn_output_residual_f32_msl(out),
-        KernelType::LagunaQkvgF16F32 => emit_laguna_qkvg_f16_f32_msl(out),
+        KernelType::LagunaAttnOutResidualF32 => {
+            let (nsg, nr0, nf) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1], v[2]),
+                None => (LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
+            };
+            check_laguna_mv_split("laguna_attn_output_residual_f32", nsg, nr0, nf)?;
+            emit_laguna_attn_output_residual_f32_msl(out, nsg, nr0, nf)
+        }
+        KernelType::LagunaQkvgF16F32 => {
+            let (nsg, nr0, nf) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1], v[2]),
+                None => (LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
+            };
+            check_laguna_mv_split("laguna_qkvg_f16_f32", nsg, nr0, nf)?;
+            emit_laguna_qkvg_f16_f32_msl(out, nsg, nr0, nf)
+        }
         KernelType::LagunaAttnDecodeGqaF16 => {
             let split = match recorded_shape(&ctx)? {
                 Some(v) => v[0],
@@ -11866,11 +11886,27 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_laguna_attn_output_residual_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::LagunaAttnOutResidualF32;
+                        // How the work is split over simdgroups, rows, and lanes.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            3,
+                            &["nsg", "nr0", "nf"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_laguna_qkvg_f16_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::LagunaQkvgF16F32;
+                        // How the work is split over simdgroups, rows, and lanes.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            3,
+                            &["nsg", "nr0", "nf"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_laguna_attention_decode_gqa_f16" => {
@@ -27180,7 +27216,7 @@ module {
     #[test]
     fn t_emit_laguna_attn_output_residual_f32_msl() {
         check(
-            |o| emit_laguna_attn_output_residual_f32_msl(o),
+            |o| emit_laguna_attn_output_residual_f32_msl(o, LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
             "if (lane == 0 && simd_group == 0) p3[row0 + row] = p2[row0 + row] + tot;",
             "emit_laguna_attn_output_residual_f32_msl",
         );
@@ -27189,12 +27225,12 @@ module {
     #[test]
     fn t_emit_laguna_qkvg_f16_f32_msl() {
         check(
-            |o| emit_laguna_qkvg_f16_f32_msl(o),
+            |o| emit_laguna_qkvg_f16_f32_msl(o, LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
             "if (global_row < q_end) { weight = p0; dst = p5; row = global_row; out_dim = q_dim; }",
             "emit_laguna_qkvg_f16_f32_msl",
         );
         check(
-            |o| emit_laguna_qkvg_f16_f32_msl(o),
+            |o| emit_laguna_qkvg_f16_f32_msl(o, LAGUNA_MV_NSG, LAGUNA_MV_NR0, LAGUNA_MV_NF),
             "part += dot(float4(wb[i]), xv[i]);",
             "emit_laguna_qkvg_f16_f32_msl#dot",
         );

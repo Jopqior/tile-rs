@@ -1125,15 +1125,16 @@ pub(super) fn emit_glm_q3_k_dot2_helper(out: &mut String) {
 /// (FC_mul_mv_nsg), N_SIMDWIDTH=32. helper_mv_reduce_add_and_write inlined.
 /// Buffers: p0=weight (half, ne01×ne00 row-major), p1=x (float), p2=residual (float),
 /// p3=dst (float). Uniforms: ne00 (K), ne01 (N). Grid (needs_3d_grid_simd).
-pub(super) fn emit_laguna_attn_output_residual_f32_msl(out: &mut String) {
-    writeln!(out, "    constexpr short NR0 = 2;").unwrap();
+pub(super) fn emit_laguna_attn_output_residual_f32_msl(out: &mut String, nsg: u32, nr0: u32, nf: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
+    writeln!(out, "    constexpr short NR0 = {nr0};").unwrap();
     writeln!(out, "    constexpr short NW  = 32;   // N_SIMDWIDTH").unwrap();
     writeln!(out, "    constexpr short NB  = 32;").unwrap();
-    writeln!(out, "    constexpr short NF  = 16;").unwrap();
+    writeln!(out, "    constexpr short NF  = {nf};").unwrap();
     writeln!(out, "    constexpr short NF4 = NF / 4;").unwrap();
     writeln!(
         out,
-        "    constexpr short NSG = 4;    // FC_mul_mv_nsg (baked)"
+        "    constexpr short NSG = {nsg};    // FC_mul_mv_nsg (baked)"
     )
     .unwrap();
     writeln!(out, "    const ushort lane = (ushort)simd_lane;").unwrap();
@@ -1154,7 +1155,7 @@ pub(super) fn emit_laguna_attn_output_residual_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "    }}").unwrap();
-    writeln!(out, "    float sums[NR0] = {{0.0f, 0.0f}};").unwrap();
+    writeln!(out, "    float sums[NR0] = {{{zeros}}};").unwrap();
     writeln!(out, "    const short ix = lane / (NW / NF);").unwrap();
     writeln!(out, "    const short il = lane % (NW / NF);").unwrap();
     writeln!(out, "    const int block0 = simd_group * NF + ix;").unwrap();
@@ -1246,15 +1247,16 @@ pub(super) fn emit_laguna_attn_output_residual_f32_msl(out: &mut String) {
 /// attn_output. NR0=2, NSG baked to 4, N_SIMDWIDTH=32. reduce_and_write inlined.
 /// Buffers: p0=q_w, p1=k_w, p2=v_w, p3=gate_w (half), p4=x (float),
 /// p5=q, p6=k, p7=v, p8=gate (float). Uniforms: in_dim, q_dim, kv_dim, gate_dim.
-pub(super) fn emit_laguna_qkvg_f16_f32_msl(out: &mut String) {
-    writeln!(out, "    constexpr short NR0 = 2;").unwrap();
+pub(super) fn emit_laguna_qkvg_f16_f32_msl(out: &mut String, nsg: u32, nr0: u32, nf: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
+    writeln!(out, "    constexpr short NR0 = {nr0};").unwrap();
     writeln!(out, "    constexpr short NW  = 32;   // N_SIMDWIDTH").unwrap();
     writeln!(out, "    constexpr short NB  = 32;").unwrap();
-    writeln!(out, "    constexpr short NF  = 16;").unwrap();
+    writeln!(out, "    constexpr short NF  = {nf};").unwrap();
     writeln!(out, "    constexpr short NF4 = NF / 4;").unwrap();
     writeln!(
         out,
-        "    constexpr short NSG = 4;    // FC_mul_mv_nsg (baked)"
+        "    constexpr short NSG = {nsg};    // FC_mul_mv_nsg (baked)"
     )
     .unwrap();
     writeln!(out, "    const ushort lane = (ushort)simd_lane;").unwrap();
@@ -1297,7 +1299,7 @@ pub(super) fn emit_laguna_qkvg_f16_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "    }}").unwrap();
-    writeln!(out, "    float sums[NR0] = {{0.0f, 0.0f}};").unwrap();
+    writeln!(out, "    float sums[NR0] = {{{zeros}}};").unwrap();
     writeln!(out, "    const short ix = lane / (NW / NF);").unwrap();
     writeln!(out, "    const short il = lane % (NW / NF);").unwrap();
     writeln!(out, "    const int block0 = simd_group * NF + ix;").unwrap();
@@ -21900,6 +21902,33 @@ pub(super) fn check_flash_vec_stage_dims(kernel: &str, dk: u32, dv: u32) -> Resu
         return Err(format!(
             "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
             halves * 2
+        ));
+    }
+    Ok(())
+}
+
+/// Work split the Laguna half-precision matvecs are built at: simdgroups per
+/// threadgroup, output rows each owns, and how many of a 32-element block one
+/// lane takes. The block itself is the simdgroup width and stays.
+pub(super) const LAGUNA_MV_NSG: u32 = 4;
+pub(super) const LAGUNA_MV_NR0: u32 = 2;
+pub(super) const LAGUNA_MV_NF: u32 = 16;
+
+/// Why a Laguna matvec work split cannot be emitted, if it cannot.
+pub(super) fn check_laguna_mv_split(kernel: &str, nsg: u32, nr0: u32, nf: u32) -> Result<(), String> {
+    if nsg == 0 || nsg > 32 {
+        return Err(format!(
+            "{kernel}: nsg {nsg} must be from 1 to 32 (its simdgroups are 32 lanes each and a threadgroup holds 1024)"
+        ));
+    }
+    if nr0 == 0 || nr0 > 16 {
+        return Err(format!(
+            "{kernel}: nr0 {nr0} must be from 1 to 16 (every row it owns costs a register accumulator and a column of scratch)"
+        ));
+    }
+    if nf == 0 || nf % 4 != 0 || 32 % nf != 0 {
+        return Err(format!(
+            "{kernel}: nf {nf} must divide the 32-element block evenly and be a multiple of 4 (a lane reads it four floats at a time)"
         ));
     }
     Ok(())
