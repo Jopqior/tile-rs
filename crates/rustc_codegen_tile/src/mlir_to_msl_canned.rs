@@ -20589,11 +20589,12 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String) {
 /// M93: kernel_dsv4_attn_out_low_q8_0_f32. Stripped-down M92 with id=group:
 /// `i02 = idx` (no ids buffer). 3 char* bufs (src0s, src1, dst). 10-uint
 /// params (M92 minus nbi1). Same M91 inner loop, M92 dispatch shell.
-pub(super) fn emit_dsv4_attn_out_low_q8_0_f32_msl(out: &mut String) {
+pub(super) fn emit_dsv4_attn_out_low_q8_0_f32_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW    = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG   = 4;").unwrap();
-    writeln!(out, "    constexpr short NR0   = 2;").unwrap();
-    writeln!(out, "    constexpr short NQ    = 8;").unwrap();
+    writeln!(out, "    constexpr short NSG   = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0   = {nr0};").unwrap();
+    writeln!(out, "    constexpr short NQ    = {nq};").unwrap();
     writeln!(out, "    constexpr short QK8_0 = 32;").unwrap();
     writeln!(out, "    constexpr uint  Q8_0_BLOCK_BYTES = 34u;").unwrap();
     writeln!(out, "    threadgroup float shmem_f32[NR0 * NW];").unwrap();
@@ -20649,7 +20650,7 @@ pub(super) fn emit_dsv4_attn_out_low_q8_0_f32_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    float sumf[NR0] = {{ 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const short ix = (short)(tiisg / (NW / NQ));").unwrap();
     writeln!(out, "    const short il = (short)(tiisg % (NW / NQ));").unwrap();
@@ -21096,11 +21097,12 @@ pub(super) fn emit_unary_op_disp_generic_msl(out: &mut String, var: UnaryVar) {
 /// Buffers: p0=src0_gate, p1=src0_up, p2=src1 (const); p3=dst_gate, p4=dst_up,
 /// p5=dst_mid (writable). 13 uints: ne00, ne01, ne0, ne1, ne12, r2, r3, nb01,
 /// nb02, nb03, nb11, nb12, nb13. NSG=2, NQ=8, NR0=N_R0_Q8_0=2.
-pub(super) fn emit_dsv4_shared_gate_up_swiglu_q8_0_msl(out: &mut String) {
+pub(super) fn emit_dsv4_shared_gate_up_swiglu_q8_0_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW    = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG   = 2;").unwrap();
-    writeln!(out, "    constexpr short NR0   = 2;").unwrap();
-    writeln!(out, "    constexpr short NQ    = 8;").unwrap();
+    writeln!(out, "    constexpr short NSG   = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0   = {nr0};").unwrap();
+    writeln!(out, "    constexpr short NQ    = {nq};").unwrap();
     writeln!(out, "    constexpr short QK8_0 = 32;").unwrap();
     writeln!(out, "    constexpr uint  Q8_0_BLOCK_BYTES = 34u;").unwrap();
     writeln!(
@@ -21149,8 +21151,8 @@ pub(super) fn emit_dsv4_shared_gate_up_swiglu_q8_0_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    float sumg[NR0] = {{ 0.0f, 0.0f }};").unwrap();
-    writeln!(out, "    float sumu[NR0] = {{ 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumg[NR0] = {{ {zeros} }};").unwrap();
+    writeln!(out, "    float sumu[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const short ix = (short)(tiisg / (NW / NQ));").unwrap();
     writeln!(out, "    const short il = (short)(tiisg % (NW / NQ));").unwrap();
