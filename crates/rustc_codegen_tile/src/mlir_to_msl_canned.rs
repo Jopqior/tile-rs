@@ -7579,11 +7579,12 @@ pub(super) fn emit_mul_mv_f16_f32_pair_4_msl(out: &mut String) {
 /// Baked constants: NW=32, NSG=4, NR0=2, NQ=8, QK8_0=32.
 /// Per-block dot: sumq += qs[i] * yl[i] over 8 elements; sumf[row] += sumq * d.
 /// Final via helper_mv_reduce_and_write 2-stage simd_sum.
-pub(super) fn emit_mul_mv_q8_0_f32_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_q8_0_f32_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW    = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG   = 4;").unwrap();
-    writeln!(out, "    constexpr short NR0   = 2;").unwrap();
-    writeln!(out, "    constexpr short NQ    = 8;").unwrap();
+    writeln!(out, "    constexpr short NSG   = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0   = {nr0};").unwrap();
+    writeln!(out, "    constexpr short NQ    = {nq};").unwrap();
     writeln!(out, "    constexpr short QK8_0 = 32;").unwrap();
     writeln!(
         out,
@@ -7625,7 +7626,7 @@ pub(super) fn emit_mul_mv_q8_0_f32_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    float sumf[NR0] = {{ 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(
         out,
@@ -8498,11 +8499,12 @@ pub(super) fn emit_mul_mm_msl(out: &mut String, src_kind: MmSrcKind) {
 ///        src1 by i11*nb11 + i12*nb12, dst by (idx + iid1*ne1)*ne0,
 ///        then runs M91 q8_0 inner loop with r2=r3=1, im=0, r1=0.
 /// ```
-pub(super) fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW    = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG   = 4;").unwrap();
-    writeln!(out, "    constexpr short NR0   = 2;").unwrap();
-    writeln!(out, "    constexpr short NQ    = 8;").unwrap();
+    writeln!(out, "    constexpr short NSG   = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0   = {nr0};").unwrap();
+    writeln!(out, "    constexpr short NQ    = {nq};").unwrap();
     writeln!(out, "    constexpr short QK8_0 = 32;").unwrap();
     writeln!(out, "    constexpr uint  Q8_0_BLOCK_BYTES = 34u;").unwrap();
     writeln!(out, "    threadgroup float shmem_f32[NR0 * NW];").unwrap();
@@ -8561,7 +8563,7 @@ pub(super) fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String) {
     .unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    float sumf[NR0] = {{ 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const short ix = (short)(tiisg / (NW / NQ));").unwrap();
     writeln!(out, "    const short il = (short)(tiisg % (NW / NQ));").unwrap();
@@ -21896,6 +21898,34 @@ pub(super) fn check_flash_vec_stage_dims(kernel: &str, dk: u32, dv: u32) -> Resu
         return Err(format!(
             "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
             halves * 2
+        ));
+    }
+    Ok(())
+}
+
+/// Work split the q8_0 matvec kernels are built at: simdgroups per threadgroup,
+/// output rows each simdgroup owns, and the slice of a quantization block one
+/// lane takes. The 32 lanes of a simdgroup and the 32-element q8_0 block around
+/// them are the hardware and the format, not a choice.
+pub(super) const Q8_0_MV_NSG: u32 = 4;
+pub(super) const Q8_0_MV_NR0: u32 = 2;
+pub(super) const Q8_0_MV_NQ: u32 = 8;
+
+/// Why a q8_0 matvec work split cannot be emitted, if it cannot.
+pub(super) fn check_q8_0_mv_split(kernel: &str, nsg: u32, nr0: u32, nq: u32) -> Result<(), String> {
+    if nsg == 0 || nsg > 32 {
+        return Err(format!(
+            "{kernel}: nsg {nsg} must be from 1 to 32 (its simdgroups are 32 lanes each and a threadgroup holds 1024)"
+        ));
+    }
+    if nr0 == 0 || nr0 > 16 {
+        return Err(format!(
+            "{kernel}: nr0 {nr0} must be from 1 to 16 (every row it owns costs a register accumulator and a column of scratch)"
+        ));
+    }
+    if nq == 0 || 32 % nq != 0 {
+        return Err(format!(
+            "{kernel}: nq {nq} must divide the 32 lanes of a simdgroup evenly (each lane takes one slice of a q8_0 block)"
         ));
     }
     Ok(())

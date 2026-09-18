@@ -9002,9 +9002,23 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::MulMvF32F32_4Reduce => emit_mul_mv_t_t_4_msl(out, false),
         KernelType::MulMvF16F32_4Reduce => emit_mul_mv_t_t_4_msl(out, true),
         KernelType::MulMvF16F32Pair_4 => emit_mul_mv_f16_f32_pair_4_msl(out),
-        KernelType::MulMvQ8_0F32 => emit_mul_mv_q8_0_f32_msl(out),
+        KernelType::MulMvQ8_0F32 => {
+            let (nsg, nr0, nq) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1], v[2]),
+                None => (Q8_0_MV_NSG, Q8_0_MV_NR0, Q8_0_MV_NQ),
+            };
+            check_q8_0_mv_split("mul_mv_q8_0_f32", nsg, nr0, nq)?;
+            emit_mul_mv_q8_0_f32_msl(out, nsg, nr0, nq)
+        }
         KernelType::MulMvQ4KF32 => emit_mul_mv_q4_K_f32_msl(out),
-        KernelType::MulMvIdQ8_0F32 => emit_mul_mv_id_q8_0_f32_msl(out),
+        KernelType::MulMvIdQ8_0F32 => {
+            let (nsg, nr0, nq) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1], v[2]),
+                None => (Q8_0_MV_NSG, Q8_0_MV_NR0, Q8_0_MV_NQ),
+            };
+            check_q8_0_mv_split("mul_mv_id_q8_0_f32", nsg, nr0, nq)?;
+            emit_mul_mv_id_q8_0_f32_msl(out, nsg, nr0, nq)
+        }
         KernelType::MulMvIdQ2KF32 => emit_mul_mv_id_q2_K_f32_msl(out),
         KernelType::MulMvIdQ4KF32 => emit_mul_mv_id_q4_K_f32_msl(out),
         KernelType::MulMvIdIq2XxsF32 => emit_mul_mv_id_iq2_xxs_f32_msl(out),
@@ -11406,11 +11420,27 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_mul_mv_q8_0_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvQ8_0F32;
+                        // How the work is split over simdgroups, rows, and lanes.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            16,
+                            &["nsg", "nr0", "nq"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_id_q8_0_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvIdQ8_0F32;
+                        // How the work is split over simdgroups, rows, and lanes.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            15,
+                            &["nsg", "nr0", "nq"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_id_q2_K_f32" => {
@@ -17636,11 +17666,12 @@ fn emit_mul_mm_msl(out: &mut String, src_kind: MmSrcKind) {
 /// Inner: reads i02 = ids[iid1*nbi1/4 + idx], offsets src0 by i02*nb02,
 ///        src1 by i11*nb11 + i12*nb12, dst by (idx + iid1*ne1)*ne0,
 ///        then runs M91 q8_0 inner loop with r2=r3=1, im=0, r1=0.
-fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String) {
+fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String, nsg: u32, nr0: u32, nq: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW    = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG   = 4;").unwrap();
-    writeln!(out, "    constexpr short NR0   = 2;").unwrap();
-    writeln!(out, "    constexpr short NQ    = 8;").unwrap();
+    writeln!(out, "    constexpr short NSG   = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0   = {nr0};").unwrap();
+    writeln!(out, "    constexpr short NQ    = {nq};").unwrap();
     writeln!(out, "    constexpr short QK8_0 = 32;").unwrap();
     writeln!(out, "    constexpr uint  Q8_0_BLOCK_BYTES = 34u;").unwrap();
     writeln!(out, "    threadgroup float shmem_f32[NR0 * NW];").unwrap();
@@ -17675,7 +17706,7 @@ fn emit_mul_mv_id_q8_0_f32_msl(out: &mut String) {
     writeln!(out, "        ax_byte[row] = (device const uchar *)(src0_cur + offset0);").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    float sumf[NR0] = {{ 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const short ix = (short)(tiisg / (NW / NQ));").unwrap();
     writeln!(out, "    const short il = (short)(tiisg % (NW / NQ));").unwrap();
@@ -28323,7 +28354,7 @@ module {
     #[test]
     fn t_emit_mul_mv_id_q8_0_f32_msl() {
         check(
-            |o| emit_mul_mv_id_q8_0_f32_msl(o),
+            |o| emit_mul_mv_id_q8_0_f32_msl(o, Q8_0_MV_NSG, Q8_0_MV_NR0, Q8_0_MV_NQ),
             "device       char * dst_cur  = p3 + ((uint64_t)idx * (uint64_t)ne0 + (uint64_t)i12 * (uint64_t)ne1 * (uint64_t)ne0) * 4u;",
             "emit_mul_mv_id_q8_0_f32_msl",
         );
@@ -28331,7 +28362,7 @@ module {
     #[test]
     fn t_emit_mul_mv_q8_0_f32_msl() {
         check(
-            |o| emit_mul_mv_q8_0_f32_msl(o),
+            |o| emit_mul_mv_q8_0_f32_msl(o, Q8_0_MV_NSG, Q8_0_MV_NR0, Q8_0_MV_NQ),
             "const uint64_t offset0 = (uint64_t)(r0 + (uint)row) * (uint64_t)nb01 + (uint64_t)(i12 / r2) * (uint64_t)nb02 + (uint64_t)(i13 / r3) * (uint64_t)nb03;",
             "emit_mul_mv_q8_0_f32_msl",
         );
