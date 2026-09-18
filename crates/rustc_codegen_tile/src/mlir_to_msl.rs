@@ -8788,7 +8788,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::FlashAttnExtOut => emit_flash_attn_ext_out_msl(out),
         KernelType::FlashAttnExtOutMS => emit_flash_attn_ext_out_ms_msl(out),
         KernelType::Dsv4HcExpand => emit_dsv4_hc_expand_msl(out),
-        KernelType::Dsv4HcExpand4 => emit_dsv4_hc_expand4_msl(out),
+        KernelType::Dsv4HcExpand4 => {
+            let hc = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => HC_EXPAND_DS4_UNROLL,
+            };
+            check_hc_unroll(hc)?;
+            emit_dsv4_hc_expand4_msl(out, hc)
+        }
         KernelType::Dsv4HcWeightedSum => emit_dsv4_hc_weighted_sum_msl(out),
         KernelType::Dsv4HcSplitSinkhornHc4 => emit_dsv4_hc_split_sinkhorn_hc4_msl(out),
         KernelType::Dsv4HcSplitWeightedSumHc4 => emit_dsv4_hc_split_weighted_sum_hc4_msl(out),
@@ -10767,6 +10774,9 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_dsv4_hc_expand4_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4HcExpand4;
+                        // The 4 in the name is the default; the operand overrides it.
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 25, &["hc_unroll"], ctx));
                     }
                 }
                 "__tile_dsv4_hc_weighted_sum_f32" => {
@@ -26576,7 +26586,7 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_dsv4_hc_expand4_msl() {
         check(
-            |o| emit_dsv4_hc_expand4_msl(o),
+            |o| emit_dsv4_hc_expand4_msl(o, HC_EXPAND_DS4_UNROLL),
             "acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + 0u * nb_comb1 + (uint64_t)t * nb_comb2)) * r0;",
             "emit_dsv4_hc_expand4_msl",
         );

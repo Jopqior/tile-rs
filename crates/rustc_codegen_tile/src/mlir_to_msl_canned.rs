@@ -5703,8 +5703,12 @@ pub(super) fn emit_dsv4_hc_expand_msl(out: &mut String) {
 ///
 /// Total threads = n_embd * n_tokens (NOT × n_hc). The loop over n_hc=4
 /// dst_hc is fully unrolled inside each thread.
-pub(super) fn emit_dsv4_hc_expand4_msl(out: &mut String) {
-    writeln!(out, "    if (n_hc != 4u) return;").unwrap();
+/// `hc` is the hyper-connection count this kernel is unrolled for: it preloads
+/// that many residual values and expands the inner combine over them, computing
+/// every output for one (embedding, token) in one thread. The kernel refuses a
+/// runtime `n_hc` that differs.
+pub(super) fn emit_dsv4_hc_expand4_msl(out: &mut String, hc: u32) {
+    writeln!(out, "    if (n_hc != {hc}u) return;").unwrap();
     writeln!(out, "    uint gid = row * tcount + tid;").unwrap();
     writeln!(out, "    uint total = n_embd * n_tokens;").unwrap();
     writeln!(out, "    if (gid >= total) return;").unwrap();
@@ -5716,17 +5720,15 @@ pub(super) fn emit_dsv4_hc_expand4_msl(out: &mut String) {
     writeln!(out, "        block_v += *((device const float *)(p4 + (uint64_t)d * nb_add0 + (uint64_t)t * nb_add1));").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out).unwrap();
-    writeln!(out, "    const float r0 = *((device const float *)(p1 + (uint64_t)d * nb_res0 + 0u * nb_res1 + (uint64_t)t * nb_res2));").unwrap();
-    writeln!(out, "    const float r1 = *((device const float *)(p1 + (uint64_t)d * nb_res0 + 1u * nb_res1 + (uint64_t)t * nb_res2));").unwrap();
-    writeln!(out, "    const float r2 = *((device const float *)(p1 + (uint64_t)d * nb_res0 + 2u * nb_res1 + (uint64_t)t * nb_res2));").unwrap();
-    writeln!(out, "    const float r3 = *((device const float *)(p1 + (uint64_t)d * nb_res0 + 3u * nb_res1 + (uint64_t)t * nb_res2));").unwrap();
+    for i in 0..hc {
+        writeln!(out, "    const float r{i} = *((device const float *)(p1 + (uint64_t)d * nb_res0 + {i}u * nb_res1 + (uint64_t)t * nb_res2));").unwrap();
+    }
     writeln!(out).unwrap();
-    writeln!(out, "    for (uint dst_hc = 0u; dst_hc < 4u; ++dst_hc) {{").unwrap();
+    writeln!(out, "    for (uint dst_hc = 0u; dst_hc < {hc}u; ++dst_hc) {{").unwrap();
     writeln!(out, "        float acc = block_v * *((device const float *)(p2 + (uint64_t)dst_hc * nb_post0 + (uint64_t)t * nb_post1));").unwrap();
-    writeln!(out, "        acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + 0u * nb_comb1 + (uint64_t)t * nb_comb2)) * r0;").unwrap();
-    writeln!(out, "        acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + 1u * nb_comb1 + (uint64_t)t * nb_comb2)) * r1;").unwrap();
-    writeln!(out, "        acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + 2u * nb_comb1 + (uint64_t)t * nb_comb2)) * r2;").unwrap();
-    writeln!(out, "        acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + 3u * nb_comb1 + (uint64_t)t * nb_comb2)) * r3;").unwrap();
+    for i in 0..hc {
+        writeln!(out, "        acc += *((device const float *)(p3 + (uint64_t)dst_hc * nb_comb0 + {i}u * nb_comb1 + (uint64_t)t * nb_comb2)) * r{i};").unwrap();
+    }
     writeln!(out, "        *((device float *)(p5 + (uint64_t)d * nb0 + (uint64_t)dst_hc * nb1 + (uint64_t)t * nb2)) = acc;").unwrap();
     writeln!(out, "    }}").unwrap();
 }
@@ -21840,6 +21842,19 @@ pub(super) fn check_laguna_decode_split(split: u32) -> Result<(), String> {
     if !(1..=32).contains(&split) {
         return Err(format!(
             "laguna_attention_decode_gqa_f16: split_simd_groups {split} must be from 1 to 32 (32 threads each, Metal allows 1024 per threadgroup)"
+        ));
+    }
+    Ok(())
+}
+
+/// Hyper-connections the shipped DeepSeek-V4 expand kernel unrolls for.
+pub(super) const HC_EXPAND_DS4_UNROLL: u32 = 4;
+
+/// Why an unrolled hyper-connection count cannot be emitted, if it cannot.
+pub(super) fn check_hc_unroll(hc: u32) -> Result<(), String> {
+    if !(1..=16).contains(&hc) {
+        return Err(format!(
+            "dsv4_hc_expand4: hc_unroll {hc} must be from 1 to 16 (every residual and combine term is unrolled into the kernel)"
         ));
     }
     Ok(())

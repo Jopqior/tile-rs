@@ -950,6 +950,11 @@ extern "C" {
 
     /// DS4 dsv4_hc_expand4: HC=4 specialization. Same args layout as expand;
     /// one thread writes all 4 dst_hc streams. Total = n_embd × n_tokens.
+    ///
+    /// `hc_unroll` is the hyper-connection count the kernel is unrolled for: it
+    /// preloads that many residuals and expands the combine over them, so it must
+    /// be a compile-time constant from 1 to 16 and must equal the runtime `n_hc`,
+    /// which the kernel checks. The 4 in this intrinsic's name is the default.
     pub fn __tile_dsv4_hc_expand4_f32(
         block_out: u32,
         residual: u32,
@@ -976,6 +981,7 @@ extern "C" {
         nb1: u32,
         nb2: u32,
         has_add: u32,
+        hc_unroll: u32,
     ) -> u32;
 
     /// DS4 dsv4_hc_weighted_sum: per-(d, t) reduce
