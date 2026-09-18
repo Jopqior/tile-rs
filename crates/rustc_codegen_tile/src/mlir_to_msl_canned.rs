@@ -2108,12 +2108,12 @@ pub(super) fn emit_dsv4_topk_mask_msl(out: &mut String) {
 /// Buffers: p0=weight (block_q8_0), p1=input (float row), p2=block_out (writable),
 /// p3=residual, p4=post, p5=comb, p6=dst (writable).
 /// Launch: tgpig.x in [0, ceil(ne01/NR0)); NSG simdgroups × NW threads/tg; threadgroup shmem of NR0*NW floats.
-pub(super) fn emit_dsv4_q8_hc_expand4_q8_0_msl(out: &mut String) {
+pub(super) fn emit_dsv4_q8_hc_expand4_q8_0_msl(out: &mut String, nsg: u32) {
     // Antirez kernel: NR0=2 rows per dispatch; NSG=2 simdgroups; NW=32 wide; NQ=8 quants/lane.
     writeln!(out, "    const ushort tiisg = (ushort)simd_lane;").unwrap();
     writeln!(out, "    const ushort sgitg = (ushort)simd_id;").unwrap();
     writeln!(out, "    if (hc.n_hc != 4 || hc.n_tokens != 1) return;").unwrap();
-    writeln!(out, "    constexpr short NSG = 2;").unwrap();
+    writeln!(out, "    constexpr short NSG = {nsg};").unwrap();
     writeln!(out, "    constexpr short NW  = 32;").unwrap();
     writeln!(out, "    constexpr short NQ  = 8;").unwrap();
     writeln!(out, "    constexpr short NR0 = 2;").unwrap();
@@ -2262,11 +2262,11 @@ pub(super) fn emit_dsv4_q8_hc_expand4_q8_0_msl(out: &mut String) {
 /// Buffers: p0=weight (block_q8_0), p1=shared_mid (float row), p2=shared_out (writable),
 /// p3=routed_out, p4=residual, p5=post, p6=comb, p7=dst (writable).
 /// Hardcodes n_hc=4, n_tokens=1, NSG=2, NW=32, NQ=8, NR0=2 (same shape as M126).
-pub(super) fn emit_dsv4_shared_down_hc_expand4_q8_0_msl(out: &mut String) {
+pub(super) fn emit_dsv4_shared_down_hc_expand4_q8_0_msl(out: &mut String, nsg: u32) {
     writeln!(out, "    const ushort tiisg = (ushort)simd_lane;").unwrap();
     writeln!(out, "    const ushort sgitg = (ushort)simd_id;").unwrap();
     writeln!(out, "    if (hc.n_hc != 4 || hc.n_tokens != 1) return;").unwrap();
-    writeln!(out, "    constexpr short NSG = 2;").unwrap();
+    writeln!(out, "    constexpr short NSG = {nsg};").unwrap();
     writeln!(out, "    constexpr short NW  = 32;").unwrap();
     writeln!(out, "    constexpr short NQ  = 8;").unwrap();
     writeln!(out, "    constexpr short NR0 = 2;").unwrap();
@@ -21909,6 +21909,21 @@ pub(super) fn check_flash_vec_stage_dims(kernel: &str, dk: u32, dv: u32) -> Resu
         return Err(format!(
             "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
             halves * 2
+        ));
+    }
+    Ok(())
+}
+
+/// Simdgroups per threadgroup the q8_0 HC expand kernels are built at. Nothing
+/// else in them moves: the two output rows and the eight-element block slice a
+/// lane takes are both written out by hand rather than looped.
+pub(super) const HC_EXPAND_MV_NSG: u32 = 2;
+
+/// Why a q8_0 HC expand simdgroup count cannot be emitted, if it cannot.
+pub(super) fn check_hc_expand_mv_split(kernel: &str, nsg: u32) -> Result<(), String> {
+    if nsg == 0 || nsg > 32 {
+        return Err(format!(
+            "{kernel}: nsg {nsg} must be from 1 to 32 (its simdgroups are 32 lanes each and a threadgroup holds 1024)"
         ));
     }
     Ok(())

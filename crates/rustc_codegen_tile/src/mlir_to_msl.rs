@@ -9126,8 +9126,22 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
             emit_flash_attn_ext_vec_f16_dk512_dv512_msl(out, dk, dv)
         }
         KernelType::Dsv4TopkMask => emit_dsv4_topk_mask_msl(out),
-        KernelType::Dsv4Q8HcExpand4Q8_0 => emit_dsv4_q8_hc_expand4_q8_0_msl(out),
-        KernelType::Dsv4SharedDownHcExpand4Q8_0 => emit_dsv4_shared_down_hc_expand4_q8_0_msl(out),
+        KernelType::Dsv4Q8HcExpand4Q8_0 => {
+            let nsg = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => HC_EXPAND_MV_NSG,
+            };
+            check_hc_expand_mv_split("dsv4_q8_hc_expand4_q8_0", nsg)?;
+            emit_dsv4_q8_hc_expand4_q8_0_msl(out, nsg)
+        }
+        KernelType::Dsv4SharedDownHcExpand4Q8_0 => {
+            let nsg = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => HC_EXPAND_MV_NSG,
+            };
+            check_hc_expand_mv_split("dsv4_shared_down_hc_expand4_q8_0", nsg)?;
+            emit_dsv4_shared_down_hc_expand4_q8_0_msl(out, nsg)
+        }
         KernelType::MulMvExtF16F32R1_2 => emit_mul_mv_ext_f16_f32_r1_n_msl(out, 2),
         KernelType::MulMvExtF16F32R1_3 => emit_mul_mv_ext_f16_f32_r1_n_msl(out, 3),
         KernelType::MulMvExtF16F32R1_4 => emit_mul_mv_ext_f16_f32_r1_n_msl(out, 4),
@@ -11705,11 +11719,29 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_dsv4_q8_hc_expand4_q8_0" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4Q8HcExpand4Q8_0;
+                        // How many simdgroups share the row. The output rows and the
+                        // per-lane block slice are written out by hand, so they do not move.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            20,
+                            &["nsg"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_dsv4_shared_down_hc_expand4_q8_0" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::Dsv4SharedDownHcExpand4Q8_0;
+                        // How many simdgroups share the row. The output rows and the
+                        // per-lane block slice are written out by hand, so they do not move.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            21,
+                            &["nsg"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_f32_f32" => {
@@ -27020,7 +27052,7 @@ mod emit_tail_tests {
     #[test]
     fn t_emit_dsv4_q8_hc_expand4_q8_0_msl() {
         check(
-            |o| emit_dsv4_q8_hc_expand4_q8_0_msl(o),
+            |o| emit_dsv4_q8_hc_expand4_q8_0_msl(o, HC_EXPAND_MV_NSG),
             "acc += *((device const float *)(p5 + (ulong)dst_hc * hc.nb_comb0 + 0 * hc.nb_comb1)) * r0;",
             "emit_dsv4_q8_hc_expand4_q8_0_msl",
         );
@@ -27950,7 +27982,7 @@ module {
     #[test]
     fn t_emit_dsv4_shared_down_hc_expand4_q8_0_msl() {
         check(
-            |o| emit_dsv4_shared_down_hc_expand4_q8_0_msl(o),
+            |o| emit_dsv4_shared_down_hc_expand4_q8_0_msl(o, HC_EXPAND_MV_NSG),
             "acc += *((device const float *)(p6 + (ulong)dst_hc * hc.nb_comb0 + 0 * hc.nb_comb1)) * r0;",
             "emit_dsv4_shared_down_hc_expand4_q8_0_msl",
         );
