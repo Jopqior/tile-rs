@@ -354,6 +354,8 @@ extern "C" {
         has_sinks: u32,
         has_bias: u32,
         has_softcap: u32,
+        dk: u32,
+        dv: u32,
     ) -> u32;
 
     /// DS4 kernel_flash_attn_ext_vec_f16_dk512_dv512 (M124) — decode-shape sibling of M123.
@@ -401,6 +403,8 @@ extern "C" {
         has_sinks: u32,
         has_bias: u32,
         has_softcap: u32,
+        dk: u32,
+        dv: u32,
     ) -> u32;
 
     /// DS4 KV ratio-4 recurrent-state shift: state[i] = state[4*width + i] for two state buffers.

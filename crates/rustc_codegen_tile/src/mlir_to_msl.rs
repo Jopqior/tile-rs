@@ -8977,9 +8977,21 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::UnaryF32F32_4 => emit_unary_op_disp_4_msl(out),
         KernelType::UnaryF16F16 => emit_unary_op_disp_half_msl(out),
         KernelType::Dsv4RopeTailF32 => emit_dsv4_rope_tail_f32_msl(out),
-        KernelType::FlashAttnExtF16Dk512Dv512 => emit_flash_attn_ext_f16_dk512_dv512_msl(out),
+        KernelType::FlashAttnExtF16Dk512Dv512 => {
+            let (dk, dv) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (FLASH_ATTN_DS4_DK, FLASH_ATTN_DS4_DV),
+            };
+            check_flash_attn_dims("flash_attn_ext_f16", dk, dv)?;
+            emit_flash_attn_ext_f16_dk512_dv512_msl(out, dk, dv)
+        }
         KernelType::FlashAttnExtVecF16Dk512Dv512 => {
-            emit_flash_attn_ext_vec_f16_dk512_dv512_msl(out)
+            let (dk, dv) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (FLASH_ATTN_DS4_DK, FLASH_ATTN_DS4_DV),
+            };
+            check_flash_attn_dims("flash_attn_ext_vec_f16", dk, dv)?;
+            emit_flash_attn_ext_vec_f16_dk512_dv512_msl(out, dk, dv)
         }
         KernelType::Dsv4TopkMask => emit_dsv4_topk_mask_msl(out),
         KernelType::Dsv4Q8HcExpand4Q8_0 => emit_dsv4_q8_hc_expand4_q8_0_msl(out),
@@ -11404,11 +11416,17 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_flash_attn_ext_f16_dk512_dv512" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtF16Dk512Dv512;
+                        // The 512s in the name are the default; the operands override.
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 39, &["dk", "dv"], ctx));
                     }
                 }
                 "__tile_flash_attn_ext_vec_f16_dk512_dv512" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtVecF16Dk512Dv512;
+                        // The 512s in the name are the default; the operands override.
+                        ctx.shape_operands =
+                            Some(trailing_shape_operands(&callee, &args, 41, &["dk", "dv"], ctx));
                     }
                 }
                 "__tile_dsv4_topk_mask_f32" => {
@@ -27718,7 +27736,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_f16_dk512_dv512_msl() {
         check(
-            |o| emit_flash_attn_ext_f16_dk512_dv512_msl(o),
+            |o| emit_flash_attn_ext_f16_dk512_dv512_msl(o, FLASH_ATTN_DS4_DK, FLASH_ATTN_DS4_DV),
             "device const half * mask_row = (device const half *)(p3 + (uint)row*U.nb31 + (uint)(iq2 % U.ne32)*U.nb32 + (uint)(iq3 % U.ne33)*U.nb33);",
             "emit_flash_attn_ext_f16_dk512_dv512_msl",
         );
@@ -27766,7 +27784,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_vec_f16_dk512_dv512_msl() {
         check(
-            |o| emit_flash_attn_ext_vec_f16_dk512_dv512_msl(o),
+            |o| emit_flash_attn_ext_vec_f16_dk512_dv512_msl(o, FLASH_ATTN_DS4_DK, FLASH_ATTN_DS4_DV),
             "device const half * mask_row = (device const half *)(p3 + (uint)iq1*U.nb31 + (uint)(iq2 % U.ne32)*U.nb32 + (uint)(iq3 % U.ne33)*U.nb33);",
             "emit_flash_attn_ext_vec_f16_dk512_dv512_msl",
         );

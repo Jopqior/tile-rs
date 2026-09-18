@@ -401,9 +401,11 @@ pub(super) fn emit_rope_dsv4_msl(out: &mut String) {
 ///
 /// Dispatch: 3D grid ((ne01+Q-1)/Q, ne02, ne03) threadgroups × tcount threads/tg.
 /// Each thread handles a subset of (j=Q-row, d=DV-element) work via tid striding.
-pub(super) fn emit_flash_attn_ext_f16_dk512_dv512_msl(out: &mut String) {
-    writeln!(out, "    constexpr short DK = 512;").unwrap();
-    writeln!(out, "    constexpr short DV = 512;").unwrap();
+/// `dk` and `dv` are the key and value head dimensions this scalar reference
+/// kernel is emitted for; the 512s in its name are only the default.
+pub(super) fn emit_flash_attn_ext_f16_dk512_dv512_msl(out: &mut String, dk: u32, dv: u32) {
+    writeln!(out, "    constexpr short DK = {dk};").unwrap();
+    writeln!(out, "    constexpr short DV = {dv};").unwrap();
     writeln!(out, "    constexpr short Q  = 8;").unwrap();
     writeln!(out, "    constexpr short C  = 64;").unwrap();
     writeln!(out).unwrap();
@@ -529,9 +531,11 @@ pub(super) fn emit_flash_attn_ext_f16_dk512_dv512_msl(out: &mut String) {
 /// per threadgroup and output layout follows the vec kernel (dst[rid*DV+d] where
 /// rid = iq3*ne2*ne1 + iq2 + iq1*ne1). NWG=1 baked.
 /// Buffers (all char*): p0=q, p1=k, p2=v, p3=mask, p4=sinks, p5=pad, p6=dst.
-pub(super) fn emit_flash_attn_ext_vec_f16_dk512_dv512_msl(out: &mut String) {
-    writeln!(out, "    constexpr short DK = 512;").unwrap();
-    writeln!(out, "    constexpr short DV = 512;").unwrap();
+/// `dk` and `dv` are the key and value head dimensions this scalar reference
+/// kernel is emitted for; the 512s in its name are only the default.
+pub(super) fn emit_flash_attn_ext_vec_f16_dk512_dv512_msl(out: &mut String, dk: u32, dv: u32) {
+    writeln!(out, "    constexpr short DK = {dk};").unwrap();
+    writeln!(out, "    constexpr short DV = {dv};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    uint tid    = _tid_v.x;").unwrap();
     writeln!(out, "    uint tcount = _tc_v.x;").unwrap();
@@ -21856,6 +21860,22 @@ pub(super) fn check_hc_unroll(hc: u32) -> Result<(), String> {
         return Err(format!(
             "dsv4_hc_expand4: hc_unroll {hc} must be from 1 to 16 (every residual and combine term is unrolled into the kernel)"
         ));
+    }
+    Ok(())
+}
+
+/// Head dimensions the shipped DeepSeek-V4 flash-attention reference kernels use.
+pub(super) const FLASH_ATTN_DS4_DK: u32 = 512;
+pub(super) const FLASH_ATTN_DS4_DV: u32 = 512;
+
+/// Why a flash-attention head shape cannot be emitted, if it cannot.
+pub(super) fn check_flash_attn_dims(kernel: &str, dk: u32, dv: u32) -> Result<(), String> {
+    for (what, v) in [("dk", dk), ("dv", dv)] {
+        if v == 0 || v % 4 != 0 || v > 4096 {
+            return Err(format!(
+                "{kernel}: {what} {v} must be a positive multiple of 4 up to 4096 (the kernel walks the head four lanes at a time)"
+            ));
+        }
     }
     Ok(())
 }
