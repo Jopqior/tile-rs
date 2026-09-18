@@ -787,6 +787,15 @@ pub(crate) const PORTED_KERNELS: &[LagunaEmitter] = &[
     ("ds4_sum_rows", emit_sum_rows_f32_for_contract, true),
     ("ds4_rms_norm", emit_rms_norm_f32_for_contract, true),
     ("ds4_softmax", emit_softmax_row_f32_simd8_msl, true),
+    // The four ported i-quant matvecs that stage a lookup table into
+    // threadgroup memory in fixed-length runs. `migrated: false` because the
+    // rest of their constructs do not route through KernelWriter -- their other
+    // obligations are unknown, not absent -- but the simdgroup count these four
+    // require is provable from the staging and is now written down.
+    ("kernel_mul_mv_iq2_xxs_f32_impl", emit_mul_mv_iq2_xxs_f32_ggml, false),
+    ("kernel_mul_mv_iq2_xs_f32_impl", emit_mul_mv_iq2_xs_f32_ggml, false),
+    ("kernel_mul_mv_iq3_xxs_f32_impl", emit_mul_mv_iq3_xxs_f32_ggml, false),
+    ("kernel_mul_mv_iq3_s_f32_impl", emit_mul_mv_iq3_s_f32_ggml, false),
 ];
 
 /// The MXFP4 routed-MoE kernels emitted into `mxfp4.metal` by `emit_mxfp4`.
@@ -999,6 +1008,19 @@ pub fn contract_table(family: &str, bin: &str, kernels: &[LagunaEmitter]) -> Str
          /// kernels drop the remainder of a truncating block count silently).\n",
     );
     out.push_str("    DimDivisibleBy { dim: &'static str, k: u32, because: &'static str },\n");
+    out.push_str(
+        "    /// A lookup table staged into threadgroup memory by giving every\n\
+         \x20   /// lane an equal, contiguous run of entries, where the run length\n\
+         \x20   /// is a literal. Run length times the lanes a threadgroup has must\n\
+         \x20   /// equal the table, so the kernel stages it correctly at exactly\n\
+         \x20   /// `n` simdgroups: fewer leaves part of the table unwritten, more\n\
+         \x20   /// runs past the end of it, and neither faults on Metal. The\n\
+         \x20   /// simdgroup count is a function constant the host picks at\n\
+         \x20   /// pipeline creation, so the kernel cannot check it.\n",
+    );
+    out.push_str(
+        "    SimdgroupsExactly { n: u32, table: &'static str, because: &'static str },\n",
+    );
     out.push_str("}\n\n");
     out.push_str("pub struct KernelContract {\n");
     out.push_str("    pub kernel: &'static str,\n");
@@ -1067,6 +1089,11 @@ pub fn contract_table(family: &str, bin: &str, kernels: &[LagunaEmitter]) -> Str
                         "            Obligation::DimDivisibleBy {{ dim: {dim:?}, k: {k}, \
                          because: {because:?} }},\n"
                     )),
+                    Obligation::SimdgroupsExactly { n, table, because } => out
+                        .push_str(&format!(
+                            "            Obligation::SimdgroupsExactly {{ n: {n}, \
+                             table: {table:?}, because: {because:?} }},\n"
+                        )),
                     Obligation::DimAtMostThreads {
                         dim,
                         divisor,

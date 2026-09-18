@@ -51,6 +51,15 @@ pub enum Obligation {
     /// A model dimension must be divisible by `k` (block-quantized
     /// kernels drop the remainder of a truncating block count silently).
     DimDivisibleBy { dim: &'static str, k: u32, because: &'static str },
+    /// A lookup table staged into threadgroup memory by giving every
+    /// lane an equal, contiguous run of entries, where the run length
+    /// is a literal. Run length times the lanes a threadgroup has must
+    /// equal the table, so the kernel stages it correctly at exactly
+    /// `n` simdgroups: fewer leaves part of the table unwritten, more
+    /// runs past the end of it, and neither faults on Metal. The
+    /// simdgroup count is a function constant the host picks at
+    /// pipeline creation, so the kernel cannot check it.
+    SimdgroupsExactly { n: u32, table: &'static str, because: &'static str },
 }
 
 pub struct KernelContract {

@@ -9563,6 +9563,17 @@ pub(super) fn emit_mul_mv_iq2_xxs_f32_ggml(out: &mut String) {
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
+    // Emitted bytes are unchanged: this only records what the staging above
+    // requires of the launch, which nothing else writes down.
+    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    k.charge_simdgroups_exactly(
+        "iq2xxs_grid[256] and ksigns_iq2xs[128]",
+        256,
+        4,
+        "int nval = 4;",
+        "the 256-entry value grid is staged as one run of 4 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; at one simdgroup more than half the grid keeps whatever was already in threadgroup memory, and at four the staging writes past the end of it",
+    );
+    let _ = k.finish();
 }
 pub(super) fn emit_mul_mv_iq2_xs_f32_ggml(out: &mut String) {
     writeln!(out, "void kernel_mul_mv_iq2_xs_f32_impl(").unwrap();
@@ -9720,6 +9731,17 @@ pub(super) fn emit_mul_mv_iq2_xs_f32_ggml(out: &mut String) {
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
+    // Emitted bytes are unchanged: this only records what the staging above
+    // requires of the launch, which nothing else writes down.
+    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    k.charge_simdgroups_exactly(
+        "iq2xs_grid[512] and ksigns_iq2xs[128]",
+        512,
+        8,
+        "int nval = 8;",
+        "the 512-entry value grid is staged as one run of 8 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; any other simdgroup count leaves part of a table unwritten or runs past its end",
+    );
+    let _ = k.finish();
 }
 pub(super) fn emit_mul_mv_iq2_s_f32_ggml(out: &mut String) {
     writeln!(out, "void kernel_mul_mv_iq2_s_f32_impl(").unwrap();
@@ -10005,6 +10027,17 @@ pub(super) fn emit_mul_mv_iq3_xxs_f32_ggml(out: &mut String) {
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
+    // Emitted bytes are unchanged: this only records what the staging above
+    // requires of the launch, which nothing else writes down.
+    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    k.charge_simdgroups_exactly(
+        "iq3xxs_grid[256] and ksigns_iq2xs[128]",
+        256,
+        4,
+        "int nval = 4;",
+        "the 256-entry value grid is staged as one run of 4 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; any other simdgroup count leaves part of a table unwritten or runs past its end",
+    );
+    let _ = k.finish();
 }
 pub(super) fn emit_mul_mv_iq3_s_f32_ggml(out: &mut String) {
     writeln!(out, "void kernel_mul_mv_iq3_s_f32_impl(").unwrap();
@@ -10139,6 +10172,17 @@ pub(super) fn emit_mul_mv_iq3_s_f32_ggml(out: &mut String) {
     writeln!(out, "        }}").unwrap();
     writeln!(out, "    }}").unwrap();
     writeln!(out, "}}").unwrap();
+    // Emitted bytes are unchanged: this only records what the staging above
+    // requires of the launch, which nothing else writes down.
+    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    k.charge_simdgroups_exactly(
+        "iq3s_grid[512]",
+        512,
+        8,
+        "int nval = 8;",
+        "the 512-entry value grid is staged as one run of 8 per lane, covering it exactly when a threadgroup has 64 lanes; the kernel then indexes svalues + 256 for its high half, so a short stage reads entries that were never written",
+    );
+    let _ = k.finish();
 }
 pub(super) fn emit_mul_mv_q1_0_f32_ggml(out: &mut String) {
     writeln!(out, "void kernel_mul_mv_q1_0_f32_impl(").unwrap();

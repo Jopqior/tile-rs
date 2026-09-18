@@ -51,6 +51,15 @@ pub enum Obligation {
     /// A model dimension must be divisible by `k` (block-quantized
     /// kernels drop the remainder of a truncating block count silently).
     DimDivisibleBy { dim: &'static str, k: u32, because: &'static str },
+    /// A lookup table staged into threadgroup memory by giving every
+    /// lane an equal, contiguous run of entries, where the run length
+    /// is a literal. Run length times the lanes a threadgroup has must
+    /// equal the table, so the kernel stages it correctly at exactly
+    /// `n` simdgroups: fewer leaves part of the table unwritten, more
+    /// runs past the end of it, and neither faults on Metal. The
+    /// simdgroup count is a function constant the host picks at
+    /// pipeline creation, so the kernel cannot check it.
+    SimdgroupsExactly { n: u32, table: &'static str, because: &'static str },
 }
 
 pub struct KernelContract {
@@ -99,6 +108,34 @@ pub const PORTED_CONTRACTS: &[KernelContract] = &[
         obligations: &[
             Obligation::DimAtMost { dim: "threads_per_threadgroup", max: 256, array: "buf_max", because: "the per-SIMD scratch is 8 entries, written at [sg_id] and read at lane < 8; more than 8 SIMD groups (256 threads) stores past it, and threadgroup memory is not bounds-checked on Metal" },
             Obligation::ThreadgroupBytes { bytes: 64 },
+        ],
+    },
+    KernelContract {
+        kernel: "kernel_mul_mv_iq2_xxs_f32_impl",
+        migrated: false,
+        obligations: &[
+            Obligation::SimdgroupsExactly { n: 2, table: "iq2xxs_grid[256] and ksigns_iq2xs[128]", because: "the 256-entry value grid is staged as one run of 4 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; at one simdgroup more than half the grid keeps whatever was already in threadgroup memory, and at four the staging writes past the end of it" },
+        ],
+    },
+    KernelContract {
+        kernel: "kernel_mul_mv_iq2_xs_f32_impl",
+        migrated: false,
+        obligations: &[
+            Obligation::SimdgroupsExactly { n: 2, table: "iq2xs_grid[512] and ksigns_iq2xs[128]", because: "the 512-entry value grid is staged as one run of 8 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; any other simdgroup count leaves part of a table unwritten or runs past its end" },
+        ],
+    },
+    KernelContract {
+        kernel: "kernel_mul_mv_iq3_xxs_f32_impl",
+        migrated: false,
+        obligations: &[
+            Obligation::SimdgroupsExactly { n: 2, table: "iq3xxs_grid[256] and ksigns_iq2xs[128]", because: "the 256-entry value grid is staged as one run of 4 per lane and the 128-entry sign table as one run of 2, so both are covered exactly when a threadgroup has 64 lanes; any other simdgroup count leaves part of a table unwritten or runs past its end" },
+        ],
+    },
+    KernelContract {
+        kernel: "kernel_mul_mv_iq3_s_f32_impl",
+        migrated: false,
+        obligations: &[
+            Obligation::SimdgroupsExactly { n: 2, table: "iq3s_grid[512]", because: "the 512-entry value grid is staged as one run of 8 per lane, covering it exactly when a threadgroup has 64 lanes; the kernel then indexes svalues + 256 for its high half, so a short stage reads entries that were never written" },
         ],
     },
 ];

@@ -63,6 +63,20 @@ pub enum Obligation {
         dims: &'static [&'static str],
         because: &'static str,
     },
+    /// A lookup table staged into threadgroup memory by giving every lane an
+    /// equal, contiguous run of entries, where the run length is a literal.
+    /// The run length times the lanes a threadgroup has must equal the table,
+    /// so the kernel only stages it correctly at exactly `n` simdgroups. Fewer
+    /// leaves part of the table unwritten and the kernel reads whatever was
+    /// there; more runs past the end of it. Neither faults on Metal.
+    ///
+    /// The simdgroup count is a function constant, so the host chooses it at
+    /// pipeline creation and the kernel cannot check it.
+    SimdgroupsExactly {
+        n: u32,
+        table: &'static str,
+        because: &'static str,
+    },
     /// A runtime dimension that indexes a FIXED-SIZE array must not exceed that
     /// array's capacity.
     ///
@@ -159,6 +173,10 @@ impl Obligation {
             Obligation::ThreadgroupBytes { bytes } => {
                 format!("threadgroup memory: {bytes} bytes")
             }
+            Obligation::SimdgroupsExactly { n, table, because } => format!(
+                "simdgroups per threadgroup must be exactly {n}, because {table} is \
+                 staged in equal fixed-length runs ({because})"
+            ),
             Obligation::BufferMinElems {
                 buffer,
                 dims,
@@ -598,6 +616,47 @@ impl<'a> KernelWriter<'a> {
     /// dropped remainder — every thread that runs behaves correctly over the
     /// blocks that exist, and the tail values are simply never read. The check
     /// belongs to the host, which is why it must be written down.
+    /// Charge [`Obligation::SimdgroupsExactly`] for a table staged in equal
+    /// fixed-length runs, one run per lane.
+    ///
+    /// The simdgroup count is DERIVED here rather than passed in: a table of
+    /// `table_entries` covered by runs of `run_len` over 32-lane simdgroups
+    /// needs `table_entries / (run_len * 32)` of them, and anything that does
+    /// not divide exactly is a staging that covers no whole number of
+    /// simdgroups and so cannot be stated as this obligation at all. Stating
+    /// the number instead of deriving it is how a contract comes to disagree
+    /// with the kernel it describes.
+    ///
+    /// `evidence_snippet` must be the run-length declaration itself, so the
+    /// charge fails if the staging it is about is edited away.
+    pub fn charge_simdgroups_exactly(
+        &mut self,
+        table: &'static str,
+        table_entries: u32,
+        run_len: u32,
+        evidence_snippet: &str,
+        because: &'static str,
+    ) {
+        assert!(
+            self.out.contains(evidence_snippet),
+            "charging a simdgroup count for {table} but the emitted source does \
+             not contain the fixed-run staging this obligation is about.\n  \
+             expected to find: {evidence_snippet:?}\nEither restore it or stop \
+             charging — the contract must not claim a dependency the kernel no \
+             longer has."
+        );
+        let lanes = run_len * 32;
+        assert!(
+            run_len > 0 && lanes > 0 && table_entries % lanes == 0,
+            "{table}: a run of {run_len} per lane covers {lanes} entries per \
+             simdgroup, which does not divide the {table_entries} the table \
+             holds — this staging spans no whole number of simdgroups, so there \
+             is no count to charge"
+        );
+        let n = table_entries / lanes;
+        self.charge(Obligation::SimdgroupsExactly { n, table, because });
+    }
+
     pub fn charge_dim_divisible_by(
         &mut self,
         dim: &'static str,
