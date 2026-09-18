@@ -853,6 +853,7 @@ extern "C" {
         dv: u32,
         ne01: u32,
         nb01: u32,
+        dk_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37b: M37a + K·Q simdgroup
@@ -874,6 +875,7 @@ extern "C" {
         nb01: u32,
         nb11: u32,
         scale: u32,
+        dk_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37c: M37b + V matmul +
@@ -896,6 +898,8 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37d: M37c + has_mask FMA
@@ -918,6 +922,8 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 dsv4_hc_expand: per-(d, dst_hc, t) HC expand step. Computes

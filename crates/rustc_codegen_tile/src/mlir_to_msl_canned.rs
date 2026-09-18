@@ -4628,7 +4628,8 @@ pub(super) fn emit_flash_attn_ext_vec_out_ms_msl(out: &mut String) {
 ///                      p7=dst (writable: NQ × DK floats per query block).
 /// Params: dk, dv, ne01, nb01.
 /// Threads: NSG*NW = 128 lanes; grid = (ceil(ne01/NQ), 1, 1).
-pub(super) fn emit_flash_attn_ext_setup_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_setup_msl(out: &mut String, dk: u32) {
+    let dk4 = dk / 4;
     writeln!(out, "    constexpr ushort NW    = 32;").unwrap();
     writeln!(
         out,
@@ -4640,8 +4641,8 @@ pub(super) fn emit_flash_attn_ext_setup_msl(out: &mut String) {
         "    constexpr ushort NSG   = 4;       // simdgroups per threadgroup"
     )
     .unwrap();
-    writeln!(out, "    constexpr ushort DK_FIXED  = 64;  // test config").unwrap();
-    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4; // 16").unwrap();
+    writeln!(out, "    constexpr ushort DK_FIXED  = {dk};  // test config").unwrap();
+    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4; // {dk4}").unwrap();
     writeln!(out, "    threadgroup half4 sq4[NQ * DK4_FIXED];").unwrap();
     writeln!(out, "    const ushort tiisg = (ushort)simd_lane;").unwrap();
     writeln!(out, "    const ushort sgitg = (ushort)simd_id;").unwrap();
@@ -4720,7 +4721,8 @@ pub(super) fn emit_flash_attn_ext_setup_msl(out: &mut String) {
 ///                      p6=blk, p7=dst (writable: ne01 × 2 floats = (S, M)).
 /// Params: dk, dv, ne01, ne11, nb01, nb11, scale.
 /// Threads: NSG*NW = 128 lanes; grid = (ceil(ne01/NQ), 1, 1).
-pub(super) fn emit_flash_attn_ext_score_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_score_msl(out: &mut String, dk: u32) {
+    let (dk4, dk8, sq_halves) = (dk / 4, dk / 8, 8 * dk);
     writeln!(out, "    constexpr ushort NW    = 32;").unwrap();
     writeln!(
         out,
@@ -4735,9 +4737,9 @@ pub(super) fn emit_flash_attn_ext_score_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort NQ_per_SG = NQ / NSG; // 2").unwrap();
     writeln!(out, "    constexpr ushort C     = 32;      // NCPSG").unwrap();
     writeln!(out, "    constexpr ushort SH    = 2 * C;   // 64").unwrap();
-    writeln!(out, "    constexpr ushort DK_FIXED  = 64;").unwrap();
-    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4;  // 16").unwrap();
-    writeln!(out, "    constexpr ushort DK8_FIXED = DK_FIXED / 8;  // 8").unwrap();
+    writeln!(out, "    constexpr ushort DK_FIXED  = {dk};").unwrap();
+    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4;  // {dk4}").unwrap();
+    writeln!(out, "    constexpr ushort DK8_FIXED = DK_FIXED / 8;  // {dk8}").unwrap();
     writeln!(
         out,
         "    constexpr ushort NS10  = DK_FIXED;          // K row stride in halves (nb11/2)"
@@ -4747,7 +4749,7 @@ pub(super) fn emit_flash_attn_ext_score_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort KV    = 8;").unwrap();
     writeln!(
         out,
-        "    constexpr ushort SQ_HALVES = NQ * DK_FIXED;       // 512"
+        "    constexpr ushort SQ_HALVES = NQ * DK_FIXED;       // {sq_halves}"
     )
     .unwrap();
     writeln!(
@@ -4954,28 +4956,31 @@ pub(super) fn emit_flash_attn_ext_score_msl(out: &mut String) {
 ///                      p5=pad, p6=blk, p7=dst (writable: ne01 × DV floats).
 /// Params: dk, dv, ne01, ne11, nb01, nb11, nb21, scale.
 /// Threads: NSG*NW = 128 lanes; grid = (ceil(ne01/NQ), 1, 1).
-pub(super) fn emit_flash_attn_ext_out_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_out_msl(out: &mut String, dk: u32, dv: u32) {
+    let (dk4, dk8, dv4) = (dk / 4, dk / 8, dv / 4);
+    let (pv4, pv8, no) = (dv / 4, dv / 8, dv / 32);
+    let (sq_halves, so_halves) = (8 * dk, 8 * dv * 2);
     writeln!(out, "    constexpr ushort NW    = 32;").unwrap();
     writeln!(out, "    constexpr ushort NQ    = 8;").unwrap();
     writeln!(out, "    constexpr ushort NSG   = 4;").unwrap();
     writeln!(out, "    constexpr ushort NQ_per_SG = NQ / NSG; // 2").unwrap();
     writeln!(out, "    constexpr ushort C     = 32;      // NCPSG").unwrap();
     writeln!(out, "    constexpr ushort SH    = 2 * C;   // 64").unwrap();
-    writeln!(out, "    constexpr ushort DK_FIXED  = 64;").unwrap();
-    writeln!(out, "    constexpr ushort DV_FIXED  = 64;").unwrap();
-    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4;  // 16").unwrap();
-    writeln!(out, "    constexpr ushort DK8_FIXED = DK_FIXED / 8;  // 8").unwrap();
-    writeln!(out, "    constexpr ushort DV4_FIXED = DV_FIXED / 4;  // 16").unwrap();
+    writeln!(out, "    constexpr ushort DK_FIXED  = {dk};").unwrap();
+    writeln!(out, "    constexpr ushort DV_FIXED  = {dv};").unwrap();
+    writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4;  // {dk4}").unwrap();
+    writeln!(out, "    constexpr ushort DK8_FIXED = DK_FIXED / 8;  // {dk8}").unwrap();
+    writeln!(out, "    constexpr ushort DV4_FIXED = DV_FIXED / 4;  // {dv4}").unwrap();
     writeln!(
         out,
-        "    constexpr ushort PV       = DV_FIXED;       // 64 (PAD2(DV,64))"
+        "    constexpr ushort PV       = DV_FIXED;       // {dv} (PAD2(DV,64))"
     )
     .unwrap();
-    writeln!(out, "    constexpr ushort PV4      = PV / 4;         // 16").unwrap();
-    writeln!(out, "    constexpr ushort PV8      = PV / 8;         // 8").unwrap();
+    writeln!(out, "    constexpr ushort PV4      = PV / 4;         // {pv4}").unwrap();
+    writeln!(out, "    constexpr ushort PV8      = PV / 8;         // {pv8}").unwrap();
     writeln!(
         out,
-        "    constexpr ushort NO       = PV8 / NSG;      // 2  (per-SG V output 8x8 tiles)"
+        "    constexpr ushort NO       = PV8 / NSG;      // {no}  (per-SG V output 8x8 tiles)"
     )
     .unwrap();
     writeln!(
@@ -4991,7 +4996,7 @@ pub(super) fn emit_flash_attn_ext_out_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort KV    = 8;").unwrap();
     writeln!(
         out,
-        "    constexpr ushort SQ_HALVES = NQ * DK_FIXED;       // 512"
+        "    constexpr ushort SQ_HALVES = NQ * DK_FIXED;       // {sq_halves}"
     )
     .unwrap();
     writeln!(
@@ -5001,7 +5006,7 @@ pub(super) fn emit_flash_attn_ext_out_msl(out: &mut String) {
     .unwrap();
     writeln!(
         out,
-        "    constexpr ushort SO_HALVES = NQ * PV * 2;          // 1024  (so backed in halves×2)"
+        "    constexpr ushort SO_HALVES = NQ * PV * 2;          // {so_halves}  (so backed in halves×2)"
     )
     .unwrap();
     writeln!(
@@ -5313,15 +5318,15 @@ pub(super) fn emit_flash_attn_ext_out_msl(out: &mut String) {
 ///                      p5=pad, p6=blk, p7=dst (writable: ne01 × DV floats).
 /// Params: dk, dv, ne01, ne11, nb01, nb11, nb21, scale.
 /// Threads: NSG*NW = 128 lanes; grid = (ceil(ne01/NQ), 1, 1).
-pub(super) fn emit_flash_attn_ext_out_ms_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_out_ms_msl(out: &mut String, dk: u32, dv: u32) {
     writeln!(out, "    constexpr ushort NW    = 32;").unwrap();
     writeln!(out, "    constexpr ushort NQ    = 8;").unwrap();
     writeln!(out, "    constexpr ushort NSG   = 4;").unwrap();
     writeln!(out, "    constexpr ushort NQ_per_SG = NQ / NSG; // 2").unwrap();
     writeln!(out, "    constexpr ushort C     = 32;").unwrap();
     writeln!(out, "    constexpr ushort SH    = 2 * C;").unwrap();
-    writeln!(out, "    constexpr ushort DK_FIXED  = 64;").unwrap();
-    writeln!(out, "    constexpr ushort DV_FIXED  = 64;").unwrap();
+    writeln!(out, "    constexpr ushort DK_FIXED  = {dk};").unwrap();
+    writeln!(out, "    constexpr ushort DV_FIXED  = {dv};").unwrap();
     writeln!(out, "    constexpr ushort DK4_FIXED = DK_FIXED / 4;").unwrap();
     writeln!(out, "    constexpr ushort DK8_FIXED = DK_FIXED / 8;").unwrap();
     writeln!(out, "    constexpr ushort DV4_FIXED = DV_FIXED / 4;").unwrap();
@@ -21859,6 +21864,40 @@ pub(super) fn check_hc_unroll(hc: u32) -> Result<(), String> {
     if !(1..=16).contains(&hc) {
         return Err(format!(
             "dsv4_hc_expand4: hc_unroll {hc} must be from 1 to 16 (every residual and combine term is unrolled into the kernel)"
+        ));
+    }
+    Ok(())
+}
+
+/// Head widths the staged flash-attention kernels are built at. The queries per
+/// threadgroup, the simdgroups, and the keys per pass are not free alongside
+/// them: the stages move data in 8x8 simdgroup tiles, which fixes eight query
+/// rows, four simdgroups, and the thirty-two keys those four tiles span.
+pub(super) const FLASH_STAGE_DK: u32 = 64;
+pub(super) const FLASH_STAGE_DV: u32 = 64;
+
+/// Why a staged head shape cannot be emitted, if it cannot. `dv` is `None` for
+/// the stages that never reach the value head.
+pub(super) fn check_flash_stage_dims(kernel: &str, dk: u32, dv: Option<u32>) -> Result<(), String> {
+    if dk == 0 || dk % 16 != 0 || dk > 1024 {
+        return Err(format!(
+            "{kernel}: dk {dk} must be a positive multiple of 16 up to 1024 (the key head is walked two 8-wide tiles at a time)"
+        ));
+    }
+    if let Some(dv) = dv {
+        if dv == 0 || dv % 64 != 0 || dv > 1024 {
+            return Err(format!(
+                "{kernel}: dv {dv} must be a positive multiple of 64 up to 1024 (its 8-wide output tiles are split over four simdgroups and consumed two at a time)"
+            ));
+        }
+    }
+    // Staged queries, the score scratch, the output scratch, and the key tiles,
+    // all in halves. A threadgroup has 32 KiB.
+    let halves = 8 * dk + 8 * 64 * 2 + dv.map(|dv| 8 * dv * 2).unwrap_or(0) + 4 * 512;
+    if halves > 16384 {
+        return Err(format!(
+            "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
+            halves * 2
         ));
     }
     Ok(())

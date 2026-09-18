@@ -48,7 +48,7 @@ use std::fmt::Write;
 // that ships as source, and it has to compile with only `mlir_parse` beside it.
 use crate::mlir_parse::{
     emit_unrolled_k_accumulation, extract_call_args, extract_result_ssa, is_builtin_helper,
-    parse_const_arg, parse_module, FuncArg, MlirFunc, MlirModule, DEFAULT_K_UNROLL,
+    parse_const_arg, parse_module, FuncArg, MlirFunc, MlirModule,
 };
 
 /// Apple GPU override, measured on this kernel rather than inherited.
@@ -8783,10 +8783,38 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::FlashAttnExtVecScore => emit_flash_attn_ext_vec_score_msl(out),
         KernelType::FlashAttnExtVecOut => emit_flash_attn_ext_vec_out_msl(out),
         KernelType::FlashAttnExtVecOutMS => emit_flash_attn_ext_vec_out_ms_msl(out),
-        KernelType::FlashAttnExtSetup => emit_flash_attn_ext_setup_msl(out),
-        KernelType::FlashAttnExtScore => emit_flash_attn_ext_score_msl(out),
-        KernelType::FlashAttnExtOut => emit_flash_attn_ext_out_msl(out),
-        KernelType::FlashAttnExtOutMS => emit_flash_attn_ext_out_ms_msl(out),
+        KernelType::FlashAttnExtSetup => {
+            let dk = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => FLASH_STAGE_DK,
+            };
+            check_flash_stage_dims("flash_attn_ext_setup", dk, None)?;
+            emit_flash_attn_ext_setup_msl(out, dk)
+        }
+        KernelType::FlashAttnExtScore => {
+            let dk = match recorded_shape(&ctx)? {
+                Some(v) => v[0],
+                None => FLASH_STAGE_DK,
+            };
+            check_flash_stage_dims("flash_attn_ext_score", dk, None)?;
+            emit_flash_attn_ext_score_msl(out, dk)
+        }
+        KernelType::FlashAttnExtOut => {
+            let (dk, dv) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (FLASH_STAGE_DK, FLASH_STAGE_DV),
+            };
+            check_flash_stage_dims("flash_attn_ext_out", dk, Some(dv))?;
+            emit_flash_attn_ext_out_msl(out, dk, dv)
+        }
+        KernelType::FlashAttnExtOutMS => {
+            let (dk, dv) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (FLASH_STAGE_DK, FLASH_STAGE_DV),
+            };
+            check_flash_stage_dims("flash_attn_ext_out_ms", dk, Some(dv))?;
+            emit_flash_attn_ext_out_ms_msl(out, dk, dv)
+        }
         KernelType::Dsv4HcExpand => emit_dsv4_hc_expand_msl(out),
         KernelType::Dsv4HcExpand4 => {
             let hc = match recorded_shape(&ctx)? {
@@ -10761,21 +10789,57 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_flash_attn_ext_setup_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtSetup;
+                        // The shared tiles are sized at emit time; the runtime dk
+                        // and dv above only say how much of them to walk.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            12,
+                            &["dk_staged"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_flash_attn_ext_score_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtScore;
+                        // The shared tiles are sized at emit time; the runtime dk
+                        // and dv above only say how much of them to walk.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            15,
+                            &["dk_staged"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_flash_attn_ext_out_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtOut;
+                        // The shared tiles are sized at emit time; the runtime dk
+                        // and dv above only say how much of them to walk.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            16,
+                            &["dk_staged", "dv_staged"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_flash_attn_ext_out_ms_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::FlashAttnExtOutMS;
+                        // The shared tiles are sized at emit time; the runtime dk
+                        // and dv above only say how much of them to walk.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            16,
+                            &["dk_staged", "dv_staged"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_dsv4_hc_expand_f32" => {
@@ -27744,7 +27808,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_out_ms_msl() {
         check(
-            |o| emit_flash_attn_ext_out_ms_msl(o),
+            |o| emit_flash_attn_ext_out_ms_msl(o, FLASH_STAGE_DK, FLASH_STAGE_DV),
             "device const half * k_base = (device const half *)((device const char *)p1 + (uint64_t)ic0 * (uint64_t)nb11);",
             "emit_flash_attn_ext_out_ms_msl",
         );
@@ -27752,7 +27816,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_out_msl() {
         check(
-            |o| emit_flash_attn_ext_out_msl(o),
+            |o| emit_flash_attn_ext_out_msl(o, FLASH_STAGE_DK, FLASH_STAGE_DV),
             "device const half * k_base = (device const half *)((device const char *)p1 + (uint64_t)ic0 * (uint64_t)nb11);",
             "emit_flash_attn_ext_out_msl",
         );
@@ -27768,7 +27832,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_score_msl() {
         check(
-            |o| emit_flash_attn_ext_score_msl(o),
+            |o| emit_flash_attn_ext_score_msl(o, FLASH_STAGE_DK),
             "device const half * k_base = (device const half *)((device const char *)p1 + (uint64_t)ic0 * (uint64_t)nb11);",
             "emit_flash_attn_ext_score_msl",
         );
@@ -27776,7 +27840,7 @@ module {
     #[test]
     fn t_emit_flash_attn_ext_setup_msl() {
         check(
-            |o| emit_flash_attn_ext_setup_msl(o),
+            |o| emit_flash_attn_ext_setup_msl(o, FLASH_STAGE_DK),
             "device float4 * dst4 = (device float4 *)((device char *)p7 + (uint64_t)iq * (uint64_t)DK4 * 16ull);",
             "emit_flash_attn_ext_setup_msl",
         );
