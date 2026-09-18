@@ -7416,10 +7416,11 @@ pub(super) fn emit_swiglu_f32_msl(out: &mut String) {
 /// p3=dst_a (float), p4=dst_b (float). Two src0 matrices share one
 /// src1 and produce two dsts in the same dispatch — saves the
 /// duplicate y4 load that two separate M89b dispatches would cost.
-pub(super) fn emit_mul_mv_f16_f32_pair_4_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_f16_f32_pair_4_msl(out: &mut String, nsg: u32, nr0: u32) {
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW  = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG = 4;").unwrap();
-    writeln!(out, "    constexpr short NR0 = 4;").unwrap();
+    writeln!(out, "    constexpr short NSG = {nsg};").unwrap();
+    writeln!(out, "    constexpr short NR0 = {nr0};").unwrap();
     writeln!(out, "    threadgroup float shmem_f32[NR0 * NW];").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const ushort tiisg = (ushort)simd_lane;").unwrap();
@@ -7450,8 +7451,8 @@ pub(super) fn emit_mul_mv_f16_f32_pair_4_msl(out: &mut String) {
     .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const uint ne00_4 = ne00 / 4u;").unwrap();
-    writeln!(out, "    float sum_a[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
-    writeln!(out, "    float sum_b[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sum_a[NR0] = {{ {zeros} }};").unwrap();
+    writeln!(out, "    float sum_b[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out, "    for (short row = 0; row < NR0; ++row) {{").unwrap();
     writeln!(out, "        if (r0 + (uint)row >= ne01) continue;").unwrap();
     writeln!(out, "        const uint64_t offset0 = (uint64_t)(r0 + row) * (uint64_t)nb01 + (uint64_t)(i12 / r2) * (uint64_t)nb02 + (uint64_t)(i13 / r3) * (uint64_t)nb03;").unwrap();
@@ -19883,12 +19884,14 @@ pub(super) fn emit_mul_mv_t_t_short_ggml(out: &mut String) {
 /// Per row: db = dh[0]; aux32 = q2[2] | (q2[3] << 16); d = db*(0.5 + (aux32>>28));
 /// sum = Σ_l 0..4 grid[a={q2[0..4] as uchar4}[l]] decoded with ksigns + kmask sign bits.
 /// Output: sumf[row] += d * sum; final write multiplied by 0.25f.
-pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String, nsg: u32, nr0: u32) {
+    let (grid_per_lane, signs_per_lane) = (256 / (nsg * 32), 128 / (nsg * 32));
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW   = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG  = 2;").unwrap();
+    writeln!(out, "    constexpr short NSG  = {nsg};").unwrap();
     writeln!(
         out,
-        "    constexpr short NR0  = 4;          // N_R0_IQ2_XXS"
+        "    constexpr short NR0  = {nr0};          // N_R0_IQ2_XXS"
     )
     .unwrap();
     writeln!(out, "    constexpr int   QK_K = 256;").unwrap();
@@ -19946,7 +19949,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "    {{").unwrap();
-    writeln!(out, "        int nval = 4;").unwrap();
+    writeln!(out, "        int nval = {grid_per_lane};").unwrap();
     writeln!(
         out,
         "        int pos  = (32 * (int)sgitg + (int)tiisg) * nval;"
@@ -19957,7 +19960,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String) {
         "        for (int i = 0; i < nval; ++i) svalues[pos + i] = ds4_metal_iq2xxs_grid[pos + i];"
     )
     .unwrap();
-    writeln!(out, "        nval = 2;").unwrap();
+    writeln!(out, "        nval = {signs_per_lane};").unwrap();
     writeln!(out, "        pos  = (32 * (int)sgitg + (int)tiisg) * nval;").unwrap();
     writeln!(
         out,
@@ -19986,7 +19989,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String) {
     writeln!(out, "    device const float * y4 = y + 32 * ix;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    float yl[32];").unwrap();
-    writeln!(out, "    float sumf[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumf[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const int nb32 = nb * (QK_K / 32);").unwrap();
     writeln!(out).unwrap();
@@ -20094,12 +20097,14 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_f32_msl(out: &mut String) {
 /// Same 11-uint params as M113. Per (idx, iid1) computes i02 = ids[iid1*nbi1/4 + idx]
 /// and offsets src0_gate/src0_up by i02*nb02; shares y load + iq2xxs_grid/ksigns
 /// shmem tables across paired streams. NSG=2, NR0=N_R0_IQ2_XXS=4, QK_K=256.
-pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String, nsg: u32, nr0: u32) {
+    let (grid_per_lane, signs_per_lane) = (256 / (nsg * 32), 128 / (nsg * 32));
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW   = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG  = 2;").unwrap();
+    writeln!(out, "    constexpr short NSG  = {nsg};").unwrap();
     writeln!(
         out,
-        "    constexpr short NR0  = 4;          // N_R0_IQ2_XXS"
+        "    constexpr short NR0  = {nr0};          // N_R0_IQ2_XXS"
     )
     .unwrap();
     writeln!(out, "    constexpr int   QK_K = 256;").unwrap();
@@ -20159,7 +20164,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String) {
     )
     .unwrap();
     writeln!(out, "    {{").unwrap();
-    writeln!(out, "        int nval = 4;").unwrap();
+    writeln!(out, "        int nval = {grid_per_lane};").unwrap();
     writeln!(
         out,
         "        int pos  = (32 * (int)sgitg + (int)tiisg) * nval;"
@@ -20170,7 +20175,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String) {
         "        for (int i = 0; i < nval; ++i) svalues[pos + i] = ds4_metal_iq2xxs_grid[pos + i];"
     )
     .unwrap();
-    writeln!(out, "        nval = 2;").unwrap();
+    writeln!(out, "        nval = {signs_per_lane};").unwrap();
     writeln!(out, "        pos  = (32 * (int)sgitg + (int)tiisg) * nval;").unwrap();
     writeln!(
         out,
@@ -20204,8 +20209,8 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String) {
     writeln!(out, "    device const float * y4 = y + 32 * ix;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    float yl[32];").unwrap();
-    writeln!(out, "    float sumg[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
-    writeln!(out, "    float sumu[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumg[NR0] = {{ {zeros} }};").unwrap();
+    writeln!(out, "    float sumu[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const int nb32 = nb * (QK_K / 32);").unwrap();
     writeln!(out).unwrap();
@@ -20354,12 +20359,14 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_f32_msl(out: &mut String) {
 /// Shares M128 iq2_xxs inner + table-share machinery. Adds 3 act uniforms
 /// (mid_row_stride, weight_stride, clamp_value). Final write per row produces
 /// gate, up, AND mid = silu(clamp(gate,c)) * clamp(up,-c,c) * route_weight.
-pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String) {
+pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String, nsg: u32, nr0: u32) {
+    let (grid_per_lane, signs_per_lane) = (256 / (nsg * 32), 128 / (nsg * 32));
+    let zeros = vec!["0.0f"; nr0 as usize].join(", ");
     writeln!(out, "    constexpr short NW   = 32;").unwrap();
-    writeln!(out, "    constexpr short NSG  = 2;").unwrap();
+    writeln!(out, "    constexpr short NSG  = {nsg};").unwrap();
     writeln!(
         out,
-        "    constexpr short NR0  = 4;          // N_R0_IQ2_XXS"
+        "    constexpr short NR0  = {nr0};          // N_R0_IQ2_XXS"
     )
     .unwrap();
     writeln!(out, "    constexpr int   QK_K = 256;").unwrap();
@@ -20402,7 +20409,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String) {
     .unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    {{").unwrap();
-    writeln!(out, "        int nval = 4;").unwrap();
+    writeln!(out, "        int nval = {grid_per_lane};").unwrap();
     writeln!(
         out,
         "        int pos  = (32 * (int)sgitg + (int)tiisg) * nval;"
@@ -20413,7 +20420,7 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String) {
         "        for (int i = 0; i < nval; ++i) svalues[pos + i] = ds4_metal_iq2xxs_grid[pos + i];"
     )
     .unwrap();
-    writeln!(out, "        nval = 2;").unwrap();
+    writeln!(out, "        nval = {signs_per_lane};").unwrap();
     writeln!(out, "        pos  = (32 * (int)sgitg + (int)tiisg) * nval;").unwrap();
     writeln!(
         out,
@@ -20447,8 +20454,8 @@ pub(super) fn emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out: &mut String) {
     writeln!(out, "    device const float * y4 = y + 32 * ix;").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    float yl[32];").unwrap();
-    writeln!(out, "    float sumg[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
-    writeln!(out, "    float sumu[NR0] = {{ 0.0f, 0.0f, 0.0f, 0.0f }};").unwrap();
+    writeln!(out, "    float sumg[NR0] = {{ {zeros} }};").unwrap();
+    writeln!(out, "    float sumu[NR0] = {{ {zeros} }};").unwrap();
     writeln!(out).unwrap();
     writeln!(out, "    const int nb32 = nb * (QK_K / 32);").unwrap();
     writeln!(out).unwrap();
@@ -21902,6 +21909,41 @@ pub(super) fn check_flash_vec_stage_dims(kernel: &str, dk: u32, dv: u32) -> Resu
         return Err(format!(
             "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
             halves * 2
+        ));
+    }
+    Ok(())
+}
+
+/// Why an IQ2_XXS work split cannot be emitted, if it cannot. These kernels
+/// stage their 256-entry value grid and 128-entry sign table into threadgroup
+/// memory by giving every lane an equal, contiguous run of entries, so the
+/// lanes a threadgroup has must divide both tables.
+pub(super) fn check_iq2_mv_split(kernel: &str, nsg: u32, nr0: u32) -> Result<(), String> {
+    check_wide_mv_split(kernel, nsg, nr0)?;
+    if 128 % (nsg * 32) != 0 {
+        return Err(format!(
+            "{kernel}: nsg {nsg} must be 1, 2 or 4, so its {} lanes divide the 128-entry sign table they stage",
+            nsg * 32
+        ));
+    }
+    Ok(())
+}
+
+/// Work split the IQ2_XXS and paired half matvecs are built at: simdgroups per
+/// threadgroup and the output rows each one owns. Their quantization block
+/// sizes are the format and stay in the text.
+pub(super) const WIDE_MV_NR0: u32 = 4;
+
+/// Why a simdgroup-and-rows work split cannot be emitted, if it cannot.
+pub(super) fn check_wide_mv_split(kernel: &str, nsg: u32, nr0: u32) -> Result<(), String> {
+    if nsg == 0 || nsg > 32 {
+        return Err(format!(
+            "{kernel}: nsg {nsg} must be from 1 to 32 (its simdgroups are 32 lanes each and a threadgroup holds 1024)"
+        ));
+    }
+    if nr0 == 0 || nr0 > 16 {
+        return Err(format!(
+            "{kernel}: nr0 {nr0} must be from 1 to 16 (every row it owns costs a register accumulator and a column of scratch)"
         ));
     }
     Ok(())

@@ -9021,7 +9021,14 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         KernelType::MulMvF16F32Reduce => emit_mul_mv_t_t_reduce_msl(out, true),
         KernelType::MulMvF32F32_4Reduce => emit_mul_mv_t_t_4_msl(out, false),
         KernelType::MulMvF16F32_4Reduce => emit_mul_mv_t_t_4_msl(out, true),
-        KernelType::MulMvF16F32Pair_4 => emit_mul_mv_f16_f32_pair_4_msl(out),
+        KernelType::MulMvF16F32Pair_4 => {
+            let (nsg, nr0) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (4, WIDE_MV_NR0),
+            };
+            check_wide_mv_split("mul_mv_f16_f32_pair_4", nsg, nr0)?;
+            emit_mul_mv_f16_f32_pair_4_msl(out, nsg, nr0)
+        }
         KernelType::MulMvQ8_0F32 => {
             let (nsg, nr0, nq) = match recorded_shape(&ctx)? {
                 Some(v) => (v[0], v[1], v[2]),
@@ -9041,9 +9048,30 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         }
         KernelType::MulMvIdQ2KF32 => emit_mul_mv_id_q2_K_f32_msl(out),
         KernelType::MulMvIdQ4KF32 => emit_mul_mv_id_q4_K_f32_msl(out),
-        KernelType::MulMvIdIq2XxsF32 => emit_mul_mv_id_iq2_xxs_f32_msl(out),
-        KernelType::MulMvIdIq2XxsPairF32 => emit_mul_mv_id_iq2_xxs_pair_f32_msl(out),
-        KernelType::MulMvIdIq2XxsPairSwigluF32 => emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out),
+        KernelType::MulMvIdIq2XxsF32 => {
+            let (nsg, nr0) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (2, WIDE_MV_NR0),
+            };
+            check_iq2_mv_split("mul_mv_id_iq2_xxs_f32", nsg, nr0)?;
+            emit_mul_mv_id_iq2_xxs_f32_msl(out, nsg, nr0)
+        }
+        KernelType::MulMvIdIq2XxsPairF32 => {
+            let (nsg, nr0) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (2, WIDE_MV_NR0),
+            };
+            check_iq2_mv_split("mul_mv_id_iq2_xxs_pair_f32", nsg, nr0)?;
+            emit_mul_mv_id_iq2_xxs_pair_f32_msl(out, nsg, nr0)
+        }
+        KernelType::MulMvIdIq2XxsPairSwigluF32 => {
+            let (nsg, nr0) = match recorded_shape(&ctx)? {
+                Some(v) => (v[0], v[1]),
+                None => (2, WIDE_MV_NR0),
+            };
+            check_iq2_mv_split("mul_mv_id_iq2_xxs_pair_swiglu_f32", nsg, nr0)?;
+            emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(out, nsg, nr0)
+        }
         KernelType::MulMvIdQ4KPairF32 => emit_mul_mv_id_q4_K_pair_f32_msl(out),
         KernelType::MulMvIdMxfp4PairSwigluF32 => emit_mul_mv_id_mxfp4_pair_swiglu_f32_msl(out),
         KernelType::MulMvIdQ4KPairSwigluF32 => emit_mul_mv_id_q4_K_pair_swiglu_f32_msl(out),
@@ -11449,6 +11477,14 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_mul_mv_f16_f32_pair_4" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvF16F32Pair_4;
+                        // How the work is split over simdgroups and output rows.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            18,
+                            &["nsg", "nr0"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_q8_0_f32" => {
@@ -11503,16 +11539,40 @@ fn classify_body(body_lines: &[String], ctx: &mut MslContext) {
                 "__tile_mul_mv_id_iq2_xxs_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvIdIq2XxsF32;
+                        // How the work is split over simdgroups and output rows.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            15,
+                            &["nsg", "nr0"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_id_iq2_xxs_pair_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvIdIq2XxsPairF32;
+                        // How the work is split over simdgroups and output rows.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            17,
+                            &["nsg", "nr0"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_id_iq2_xxs_pair_swiglu_f32" => {
                     if ctx.kernel_type == KernelType::Copy {
                         ctx.kernel_type = KernelType::MulMvIdIq2XxsPairSwigluF32;
+                        // How the work is split over simdgroups and output rows.
+                        ctx.shape_operands = Some(trailing_shape_operands(
+                            &callee,
+                            &args,
+                            22,
+                            &["nsg", "nr0"],
+                            ctx,
+                        ));
                     }
                 }
                 "__tile_mul_mv_id_q4_K_pair_f32" => {
@@ -28324,7 +28384,7 @@ module {
     #[test]
     fn t_emit_mul_mv_f16_f32_pair_4_msl() {
         check(
-            |o| emit_mul_mv_f16_f32_pair_4_msl(o),
+            |o| emit_mul_mv_f16_f32_pair_4_msl(o, 4, WIDE_MV_NR0),
             "const uint64_t offset0 = (uint64_t)(r0 + row) * (uint64_t)nb01 + (uint64_t)(i12 / r2) * (uint64_t)nb02 + (uint64_t)(i13 / r3) * (uint64_t)nb03;",
             "emit_mul_mv_f16_f32_pair_4_msl",
         );
@@ -28332,7 +28392,7 @@ module {
     #[test]
     fn t_emit_mul_mv_id_iq2_xxs_f32_msl() {
         check(
-            |o| emit_mul_mv_id_iq2_xxs_f32_msl(o),
+            |o| emit_mul_mv_id_iq2_xxs_f32_msl(o, 2, WIDE_MV_NR0),
             "device       char * dst_cur  = p3 + ((uint64_t)idx * (uint64_t)ne0 + (uint64_t)i12 * (uint64_t)ne1 * (uint64_t)ne0) * 4u;",
             "emit_mul_mv_id_iq2_xxs_f32_msl",
         );
@@ -28340,7 +28400,7 @@ module {
     #[test]
     fn t_emit_mul_mv_id_iq2_xxs_pair_f32_msl() {
         check(
-            |o| emit_mul_mv_id_iq2_xxs_pair_f32_msl(o),
+            |o| emit_mul_mv_id_iq2_xxs_pair_f32_msl(o, 2, WIDE_MV_NR0),
             "device       char * dst_gate_cur  = p3 + ((uint64_t)idx * (uint64_t)ne0 + (uint64_t)i12 * (uint64_t)ne1 * (uint64_t)ne0) * 4u;",
             "emit_mul_mv_id_iq2_xxs_pair_f32_msl",
         );
@@ -28348,7 +28408,7 @@ module {
     #[test]
     fn t_emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl() {
         check(
-            |o| emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(o),
+            |o| emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl(o, 2, WIDE_MV_NR0),
             "device float * dst_gate_f32 = (device float *)(p3 + ((uint64_t)i12 * (uint64_t)ne1 * (uint64_t)ne0 + (uint64_t)i11 * (uint64_t)ne0) * 4u);",
             "emit_mul_mv_id_iq2_xxs_pair_swiglu_f32_msl",
         );
