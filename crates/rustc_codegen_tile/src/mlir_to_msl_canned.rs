@@ -3809,11 +3809,13 @@ pub(super) fn emit_flash_attn_ext_vec_reduce_msl(out: &mut String) {
 /// Params: dk, dv, ne01, nb01.
 /// Threads: NW=32 lanes, NSG=1, NWG=1; grid = (ne01, 1, 1).
 /// Test config: DK=DV=64 (DK4=DV4=16), PK=PV=128 (PK4=PV4=32).
-pub(super) fn emit_flash_attn_ext_vec_setup_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_vec_setup_msl(out: &mut String, dk: u32, dv: u32) {
+    let (pk, pv) = (dk.next_multiple_of(128), dv.next_multiple_of(128));
+    let pk4 = pk / 4;
     writeln!(out, "    constexpr ushort NW   = 32;").unwrap();
-    writeln!(out, "    constexpr ushort PK   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PK4  = 32;").unwrap();
-    writeln!(out, "    constexpr ushort PV   = 128;").unwrap();
+    writeln!(out, "    constexpr ushort PK   = {pk};").unwrap();
+    writeln!(out, "    constexpr ushort PK4  = {pk4};").unwrap();
+    writeln!(out, "    constexpr ushort PV   = {pv};").unwrap();
     writeln!(
         out,
         "    constexpr ushort SH   = 4 * 32; // 4*C, C=NCPSG=32"
@@ -3875,7 +3877,9 @@ pub(super) fn emit_flash_attn_ext_vec_setup_msl(out: &mut String) {
 ///                      p6=dst (writable: ne01 × 2 floats).
 /// Params: dk, dv, ne01, ne11, nb01, nb11, scale.
 /// Threads: NW=32 lanes (single simdgroup); grid = (ne01, 1, 1).
-pub(super) fn emit_flash_attn_ext_vec_score_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_vec_score_msl(out: &mut String, dk: u32, dv: u32) {
+    let (pk, pv) = (dk.next_multiple_of(128), dv.next_multiple_of(128));
+    let (pk4, dk4, dk4_nl) = (pk / 4, dk / 4, dk / 32);
     writeln!(out, "    constexpr ushort NW   = 32;").unwrap();
     writeln!(out, "    constexpr ushort NE   = 4;").unwrap();
     writeln!(out, "    constexpr ushort NL   = NW / NE;            // 8").unwrap();
@@ -3887,13 +3891,13 @@ pub(super) fn emit_flash_attn_ext_vec_score_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort CNE  = C / NE;             // 8").unwrap();
     writeln!(
         out,
-        "    constexpr ushort DK4_FIXED = 16;            // DK=64"
+        "    constexpr ushort DK4_FIXED = {dk4};            // DK={dk}"
     )
     .unwrap();
-    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // 2").unwrap();
-    writeln!(out, "    constexpr ushort PK   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PK4  = 32;").unwrap();
-    writeln!(out, "    constexpr ushort PV   = 128;").unwrap();
+    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // {dk4_nl}").unwrap();
+    writeln!(out, "    constexpr ushort PK   = {pk};").unwrap();
+    writeln!(out, "    constexpr ushort PK4  = {pk4};").unwrap();
+    writeln!(out, "    constexpr ushort PV   = {pv};").unwrap();
     writeln!(out, "    constexpr ushort SH   = 4 * C;").unwrap();
     writeln!(out, "    constexpr ushort NSG  = 1;").unwrap();
     writeln!(
@@ -4035,7 +4039,10 @@ pub(super) fn emit_flash_attn_ext_vec_score_msl(out: &mut String) {
 /// Threads: NW=32 lanes, NSG=1, NWG=1; grid = (ne01, 1, 1).
 /// Test config: DK=DV=64 (DK4=DV4=16), C=NCPSG=32, NE=4, NL=NW/NE=8,
 /// CNE=C/NE=8, DK4/NL=2, DV4/NL=2.
-pub(super) fn emit_flash_attn_ext_vec_out_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_vec_out_msl(out: &mut String, dk: u32, dv: u32) {
+    let (pk, pv) = (dk.next_multiple_of(128), dv.next_multiple_of(128));
+    let (pk4, pv4) = (pk / 4, pv / 4);
+    let (dk4, dv4, dk4_nl, dv4_nl) = (dk / 4, dv / 4, dk / 32, dv / 32);
     writeln!(out, "    constexpr ushort NW   = 32;").unwrap();
     writeln!(out, "    constexpr ushort NE   = 4;").unwrap();
     writeln!(out, "    constexpr ushort NL   = NW / NE;            // 8").unwrap();
@@ -4047,20 +4054,20 @@ pub(super) fn emit_flash_attn_ext_vec_out_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort CNE  = C / NE;             // 8").unwrap();
     writeln!(
         out,
-        "    constexpr ushort DK4_FIXED = 16;            // DK=64"
+        "    constexpr ushort DK4_FIXED = {dk4};            // DK={dk}"
     )
     .unwrap();
     writeln!(
         out,
-        "    constexpr ushort DV4_FIXED = 16;            // DV=64"
+        "    constexpr ushort DV4_FIXED = {dv4};            // DV={dv}"
     )
     .unwrap();
-    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // 2").unwrap();
-    writeln!(out, "    constexpr ushort DV4_NL    = DV4_FIXED / NL; // 2").unwrap();
-    writeln!(out, "    constexpr ushort PK   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PK4  = 32;").unwrap();
-    writeln!(out, "    constexpr ushort PV   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PV4  = 32;").unwrap();
+    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // {dk4_nl}").unwrap();
+    writeln!(out, "    constexpr ushort DV4_NL    = DV4_FIXED / NL; // {dv4_nl}").unwrap();
+    writeln!(out, "    constexpr ushort PK   = {pk};").unwrap();
+    writeln!(out, "    constexpr ushort PK4  = {pk4};").unwrap();
+    writeln!(out, "    constexpr ushort PV   = {pv};").unwrap();
+    writeln!(out, "    constexpr ushort PV4  = {pv4};").unwrap();
     writeln!(out, "    constexpr ushort SH   = 4 * C;").unwrap();
     writeln!(out, "    constexpr ushort NSG  = 1;").unwrap();
     // Extra slack for so4 init: antirez writes from lane tiisg up to slot tiisg+(DV4/NL-1)*NL
@@ -4313,7 +4320,10 @@ pub(super) fn emit_flash_attn_ext_vec_out_msl(out: &mut String) {
 ///                      p6=dst (writable: ne01 × DV floats).
 /// Params: dk, dv, ne01, ne11, nb01, nb11, nb21, scale.
 /// Threads: NW=32 lanes, NSG=1, NWG=1; grid = (ne01, 1, 1).
-pub(super) fn emit_flash_attn_ext_vec_out_ms_msl(out: &mut String) {
+pub(super) fn emit_flash_attn_ext_vec_out_ms_msl(out: &mut String, dk: u32, dv: u32) {
+    let (pk, pv) = (dk.next_multiple_of(128), dv.next_multiple_of(128));
+    let (pk4, pv4) = (pk / 4, pv / 4);
+    let (dk4, dv4, dk4_nl, dv4_nl) = (dk / 4, dv / 4, dk / 32, dv / 32);
     writeln!(out, "    constexpr ushort NW   = 32;").unwrap();
     writeln!(out, "    constexpr ushort NE   = 4;").unwrap();
     writeln!(out, "    constexpr ushort NL   = NW / NE;            // 8").unwrap();
@@ -4325,20 +4335,20 @@ pub(super) fn emit_flash_attn_ext_vec_out_ms_msl(out: &mut String) {
     writeln!(out, "    constexpr ushort CNE  = C / NE;             // 8").unwrap();
     writeln!(
         out,
-        "    constexpr ushort DK4_FIXED = 16;            // DK=64"
+        "    constexpr ushort DK4_FIXED = {dk4};            // DK={dk}"
     )
     .unwrap();
     writeln!(
         out,
-        "    constexpr ushort DV4_FIXED = 16;            // DV=64"
+        "    constexpr ushort DV4_FIXED = {dv4};            // DV={dv}"
     )
     .unwrap();
-    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // 2").unwrap();
-    writeln!(out, "    constexpr ushort DV4_NL    = DV4_FIXED / NL; // 2").unwrap();
-    writeln!(out, "    constexpr ushort PK   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PK4  = 32;").unwrap();
-    writeln!(out, "    constexpr ushort PV   = 128;").unwrap();
-    writeln!(out, "    constexpr ushort PV4  = 32;").unwrap();
+    writeln!(out, "    constexpr ushort DK4_NL    = DK4_FIXED / NL; // {dk4_nl}").unwrap();
+    writeln!(out, "    constexpr ushort DV4_NL    = DV4_FIXED / NL; // {dv4_nl}").unwrap();
+    writeln!(out, "    constexpr ushort PK   = {pk};").unwrap();
+    writeln!(out, "    constexpr ushort PK4  = {pk4};").unwrap();
+    writeln!(out, "    constexpr ushort PV   = {pv};").unwrap();
+    writeln!(out, "    constexpr ushort PV4  = {pv4};").unwrap();
     writeln!(out, "    constexpr ushort SH   = 4 * C;").unwrap();
     writeln!(out, "    constexpr ushort NSG  = 1;").unwrap();
     writeln!(
@@ -21864,6 +21874,28 @@ pub(super) fn check_hc_unroll(hc: u32) -> Result<(), String> {
     if !(1..=16).contains(&hc) {
         return Err(format!(
             "dsv4_hc_expand4: hc_unroll {hc} must be from 1 to 16 (every residual and combine term is unrolled into the kernel)"
+        ));
+    }
+    Ok(())
+}
+
+/// Why a vector-staged head shape cannot be emitted, if it cannot. These stages
+/// spread each head across the 8 lane groups of one simdgroup, four elements at
+/// a time, so both widths move in steps of 32.
+pub(super) fn check_flash_vec_stage_dims(kernel: &str, dk: u32, dv: u32) -> Result<(), String> {
+    for (what, v) in [("dk", dk), ("dv", dv)] {
+        if v == 0 || v % 32 != 0 || v > 1024 {
+            return Err(format!(
+                "{kernel}: {what} {v} must be a positive multiple of 32 up to 1024 (the head is spread over 8 lane groups, four elements each)"
+            ));
+        }
+    }
+    // Staged query, scores, output, and the slack the output init writes into.
+    let halves = dk.next_multiple_of(128) + 128 + 2 * dv.next_multiple_of(128) + 256;
+    if halves > 16384 {
+        return Err(format!(
+            "{kernel}: those head widths need {} bytes of threadgroup memory, over the 32768 a threadgroup has",
+            halves * 2
         ));
     }
     Ok(())

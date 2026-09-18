@@ -769,6 +769,8 @@ extern "C" {
         dv: u32,
         ne01: u32,
         nb01: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36b: setup + K·Q dot + online softmax merge.
@@ -790,6 +792,8 @@ extern "C" {
         nb01: u32,
         nb11: u32,
         scale: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36c: full single-SG flash-attention output.
@@ -813,6 +817,8 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36d: M36c + has_mask + has_sinks paths baked in.
@@ -834,6 +840,8 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
+        dk_staged: u32,
+        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37a: setup + Q load echo.
