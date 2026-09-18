@@ -14,13 +14,104 @@
 
 use tile_codegen::{EmitOpts, TargetRegistry};
 
+const PAIR4: &str = r#"
+module {
+  llvm.func @ds4_kernel_mul_mv_f16_f32_pair_4(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>, %arg4: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %ne00 = llvm.mlir.constant(32 : i32) : i32
+    %ne01 = llvm.mlir.constant(64 : i32) : i32
+    %ne0  = llvm.mlir.constant(64 : i32) : i32
+    %ne1  = llvm.mlir.constant(4  : i32) : i32
+    %ne12 = llvm.mlir.constant(1  : i32) : i32
+    %r2   = llvm.mlir.constant(1  : i32) : i32
+    %r3   = llvm.mlir.constant(1  : i32) : i32
+    %nb01 = llvm.mlir.constant(64   : i32) : i32
+    %nb02 = llvm.mlir.constant(4096 : i32) : i32
+    %nb03 = llvm.mlir.constant(4096 : i32) : i32
+    %nb11 = llvm.mlir.constant(128  : i32) : i32
+    %nb12 = llvm.mlir.constant(512  : i32) : i32
+    %nb13 = llvm.mlir.constant(512  : i32) : i32
+    %r = llvm.call @__tile_mul_mv_f16_f32_pair_4(%arg0, %arg1, %arg2, %arg3, %arg4, %ne00, %ne01, %ne0, %ne1, %ne12, %r2, %r3, %nb01, %nb02, %nb03, %nb11, %nb12, %nb13) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
+    llvm.return
+  }
+}
+"#;
+
+const IQ2: &str = r#"
+module {
+  llvm.func @ds4_kernel_mul_mv_id_iq2_xxs_f32(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %ne00 = llvm.mlir.constant(256 : i32) : i32
+    %ne01 = llvm.mlir.constant(16  : i32) : i32
+    %ne0  = llvm.mlir.constant(16  : i32) : i32
+    %ne1  = llvm.mlir.constant(1   : i32) : i32
+    %ne11 = llvm.mlir.constant(1   : i32) : i32
+    %nei0 = llvm.mlir.constant(2   : i32) : i32
+    %nbi1 = llvm.mlir.constant(8   : i32) : i32
+    %nb01 = llvm.mlir.constant(66   : i32) : i32
+    %nb02 = llvm.mlir.constant(1056 : i32) : i32
+    %nb11 = llvm.mlir.constant(1024 : i32) : i32
+    %nb12 = llvm.mlir.constant(1024 : i32) : i32
+    %r = llvm.call @__tile_mul_mv_id_iq2_xxs_f32(%arg0, %arg1, %arg2, %arg3, %ne00, %ne01, %ne0, %ne1, %ne11, %nei0, %nbi1, %nb01, %nb02, %nb11, %nb12) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
+    llvm.return
+  }
+}
+"#;
+
+const IQ2_PAIR: &str = r#"
+module {
+  llvm.func @ds4_kernel_mul_mv_id_iq2_xxs_pair_f32(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>, %arg4: !llvm.ptr<1>, %arg5: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %ne00 = llvm.mlir.constant(256 : i32) : i32
+    %ne01 = llvm.mlir.constant(16  : i32) : i32
+    %ne0  = llvm.mlir.constant(16  : i32) : i32
+    %ne1  = llvm.mlir.constant(1   : i32) : i32
+    %ne11 = llvm.mlir.constant(1   : i32) : i32
+    %nei0 = llvm.mlir.constant(2   : i32) : i32
+    %nbi1 = llvm.mlir.constant(8   : i32) : i32
+    %nb01 = llvm.mlir.constant(66   : i32) : i32
+    %nb02 = llvm.mlir.constant(1056 : i32) : i32
+    %nb11 = llvm.mlir.constant(1024 : i32) : i32
+    %nb12 = llvm.mlir.constant(1024 : i32) : i32
+    %r = llvm.call @__tile_mul_mv_id_iq2_xxs_pair_f32(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %ne00, %ne01, %ne0, %ne1, %ne11, %nei0, %nbi1, %nb01, %nb02, %nb11, %nb12) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32) -> i32
+    llvm.return
+  }
+}
+"#;
+
+const IQ2_SWIGLU: &str = r#"
+module {
+  llvm.func @ds4_kernel_mul_mv_id_iq2_xxs_pair_swiglu_f32(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>, %arg3: !llvm.ptr<1>, %arg4: !llvm.ptr<1>, %arg5: !llvm.ptr<1>, %arg6: !llvm.ptr<1>, %arg7: !llvm.ptr<1>) attributes {hacc.entry} {
+    ^bb0:
+    %ne00 = llvm.mlir.constant(256 : i32) : i32
+    %ne01 = llvm.mlir.constant(16  : i32) : i32
+    %ne0  = llvm.mlir.constant(16  : i32) : i32
+    %ne1  = llvm.mlir.constant(1   : i32) : i32
+    %ne11 = llvm.mlir.constant(1   : i32) : i32
+    %nei0 = llvm.mlir.constant(2   : i32) : i32
+    %nbi1 = llvm.mlir.constant(8   : i32) : i32
+    %nb01 = llvm.mlir.constant(66   : i32) : i32
+    %nb02 = llvm.mlir.constant(1056 : i32) : i32
+    %nb11 = llvm.mlir.constant(1024 : i32) : i32
+    %nb12 = llvm.mlir.constant(1024 : i32) : i32
+    %mid_row_stride = llvm.mlir.constant(64 : i32) : i32
+    %weight_stride  = llvm.mlir.constant(4  : i32) : i32
+    %clamp_value    = llvm.mlir.constant(7.0 : f32) : f32
+    %r = llvm.call @__tile_mul_mv_id_iq2_xxs_pair_swiglu_f32(%arg0, %arg1, %arg2, %arg3, %arg4, %arg5, %arg6, %arg7, %ne00, %ne01, %ne0, %ne1, %ne11, %nei0, %nbi1, %nb01, %nb02, %nb11, %nb12, %mid_row_stride, %weight_stride, %clamp_value) : (!llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, !llvm.ptr<1>, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, i32, f32) -> i32
+    llvm.return
+  }
+}
+"#;
+
 fn fixture(name: &str) -> String {
-    let p = format!("{}/../codegen_tests/src/bin/print_msl.rs", env!("CARGO_MANIFEST_DIR"));
-    let src = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("{p}: {e}"));
-    let at = src.find(&format!("fn {name}_mlir() -> &'static str {{")).unwrap_or_else(|| panic!("no {name}"));
-    let a = src[at..].find("r#\"").unwrap() + at + 3;
-    let b = src[a..].find("\"#").unwrap() + a;
-    src[a..b].to_string()
+    match name {
+        "mul_mv_f16_f32_pair_4" => PAIR4,
+        "mul_mv_id_iq2_xxs_f32" => IQ2,
+        "mul_mv_id_iq2_xxs_pair_f32" => IQ2_PAIR,
+        "mul_mv_id_iq2_xxs_pair_swiglu_f32" => IQ2_SWIGLU,
+        other => panic!("no fixture for {other}"),
+    }
+    .to_string()
 }
 
 fn try_emit(mlir: &str) -> Result<String, String> {
