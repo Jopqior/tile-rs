@@ -1,0 +1,14 @@
+Selected verbatim lines from gh run view --log; not a full log.
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:49.7933965Z Linux runnervmlun5p 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:49.7936779Z ImageOS=ubuntu24 ImageVersion=20260907.300.1 Runner=GitHub Actions 1000000152
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.0693238Z 757d:00:00.0 Non-Volatile memory controller [0108]: Microsoft Corporation Device [1414:00a9]
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.0693742Z 7870:00:00.0 Ethernet controller [0200]: Microsoft Corporation Device [1414:00ba]
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.0694291Z c05b:00:00.0 Non-Volatile memory controller [0108]: Microsoft Corporation Device [1414:00a9]
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.0836558Z Ascend devices/installations: []
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.1298690Z g++-13	13.3.0-6ubuntu2~24.04.1
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.1299192Z git	1:2.55.0-0ppa1~ubuntu24.04.2
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.1299776Z libstdc++-13-dev:amd64	13.3.0-6ubuntu2~24.04.1
+add	Record host and check absence of exposed NPU	2026-09-22T16:00:50.1300222Z python3	3.12.3-0ubuntu2.1
+add	Build real CPU-SIM and compare independent reference	2026-09-22T16:00:50.1531472Z Python 3.12.3
+add	Build real CPU-SIM and compare independent reference	2026-09-22T16:00:52.5415575Z  * branch            82361dd56d4ea5d0dc99f14028fe5eb8b5c46d19 -> FETCH_HEAD
+add	Build real CPU-SIM and compare independent reference	2026-09-22T16:00:55.2756810Z PASS: PTO CPU-SIM f32 add, shape=[1,256], 256/256 exact matches, atol=rtol=0

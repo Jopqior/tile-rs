@@ -26,4 +26,4 @@ INJECT_ERROR=1 bash prototypes/pto-cpu-sim/run.sh # 预期退出 1
 
 成功仅说明该固定模型和输入集的最小功能正确性 CI 可行。不覆盖 CANN camodel、设备目标编译、硬件时序、同步、性能、多卡、所有 shape/dtype，或 tile-rs 端到端编译链。
 
-运行证据在实验结束后补充。
+正常、负例与恢复运行的链接、提交及环境版本见[实验记录](../../docs/research/pto-cpu-sim-prototype.md)。
