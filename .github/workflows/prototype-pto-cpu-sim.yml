@@ -1,0 +1,36 @@
+name: Prototype PTO CPU-SIM add
+on:
+  push:
+    branches: [prototype/58-pto-cpu-sim]
+    paths:
+      - prototypes/pto-cpu-sim/**
+      - .github/workflows/prototype-pto-cpu-sim.yml
+permissions:
+  contents: read
+jobs:
+  add:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CXX: g++-13
+      INJECT_ERROR: '0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Record host and check absence of exposed NPU
+        shell: bash
+        run: |
+          uname -a
+          printf 'ImageOS=%s ImageVersion=%s Runner=%s\n' "$ImageOS" "$ImageVersion" "$RUNNER_NAME"
+          lspci -nn
+          python3 - <<'PY'
+          import glob
+          paths = [p for pattern in ('/dev/davinci*', '/dev/devmm_svm', '/dev/hisi_hdc', '/usr/local/Ascend*') for p in glob.glob(pattern)]
+          print('Ascend devices/installations:', paths)
+          if paths:
+              raise SystemExit('Unexpected Ascend device or installation')
+          PY
+          dpkg-query -W g++-13 libstdc++-13-dev python3 git
+      - name: Build real CPU-SIM and compare independent reference
+        run: bash prototypes/pto-cpu-sim/run.sh
