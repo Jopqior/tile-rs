@@ -11,8 +11,14 @@ jobs:
   add:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        program: [handwritten, generated]
     env:
       CXX: g++-13
+      PROGRAM_MODE: ${{ matrix.program }}
+      BUILD_DIR: ${{ runner.temp }}/pto-add
       INJECT_ERROR: '0'
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -34,3 +40,14 @@ jobs:
           dpkg-query -W g++-13 libstdc++-13-dev python3 git
       - name: Build real CPU-SIM and compare independent reference
         run: bash prototypes/pto-cpu-sim/run.sh
+      - name: Preserve IR, unmodified generated C++ and test data
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: pto-add-${{ matrix.program }}
+          path: |
+            ${{ runner.temp }}/pto-add/input.pto
+            ${{ runner.temp }}/pto-add/generated.cpp
+            ${{ runner.temp }}/pto-add/inputs.txt
+            ${{ runner.temp }}/pto-add/outputs.txt
+          retention-days: 30
