@@ -47,6 +47,40 @@ INJECT_ERROR=1 bash prototypes/pto-cpu-sim/run.sh # 预期失败
 
 workflow 仅在 throwaway 分支的原型路径 push 时执行，不成为 main 正式门禁。无需新凭据、付费资源或外部授权。
 
+## 补验：最小 PTO IR → CPU-SIM
+
+用户确认补验中间产物接入后，增加 `generated` 模式；原手写 C++ 模式作为另一个 matrix job 保留。新增 IR 是独立手写 `[1,256]` f32 add，**不是 tile-rs 的实际产物**。
+
+```text
+add.pto → PTOAS 0.65 → generated.cpp（不修改）
+  → generated-host.cpp 包含生成文件、提供输入输出与直接调用
+  → g++ -D__CPU_SIM → 同一 Python 独立参考比较器
+```
+
+已实际验证此最小 IR 接入可行，不只是文档上的候选路线。生成代码含 `TASSIGN`、`TLOAD/TADD/TSTORE`、set/wait flag 和同步尾部，均原样保留。适配仅为预先包含 `<cstdint>/<cstddef>`、host 分配缓冲区与文件 I/O、调用 `add_generated(a,b,out)`。没有替换运算、删同步或自定义空 stub。但 CPU 模型通过仍不验证设备同步语义。
+
+### 补验版本与结果
+
+- PTOAS release `v0.65`，使用 `ptoas-0.65-cp312-cp312-manylinux_2_34_x86_64.whl`，SHA256 `8fc9f14a4402db178341938f41faf9a9d66474a57b7524b3fc331ffc6db27795`，下载后校验，venv 内 `pip --no-index --no-deps` 安装。运行报告 `ptoas 0.65`。这是固定发布资产，不把之前文档调查的 PTOAS 源码 pin 冒充该二进制的构建来源。
+- 命令：`ptoas input.pto --pto-arch=a3 --enable-insert-sync -o generated.cpp`。ISA pin 与先前原型一致。
+- 正常 generated job 的 runner 镜像 `20260907.300.1`，GCC 13.3.0、Python 3.12.3；环境检查同样未发现 Ascend 设备/安装。这也展示 `ubuntu-24.04` 标签并不冻结镜像。
+- 输入 IR SHA256 `18d4eadf447fdd9978d2bb1a2beabb24f83f0f63069552c9b240ac60a7ccd225`。
+- 原始生成 C++ SHA256 `a897a3b82a374ab166b493636828d41b674fc0c1c24f1d53a1f78deb900f4e94`；已下载正常与恢复运行产物并比较一致。[生成 C++ 留存副本](pto-cpu-sim-evidence/generated.cpp)仅作证据，CI 每次重新生成，不编译留存副本。
+
+| 实验 | 固定提交 | Actions | generated job 结果 |
+|---|---|---|---|
+| 正常 | `79b3eba849aa88ad64156e6d71ac0af4b83d4b56` | [IR 正常运行](https://github.com/Jopqior/tile-rs/actions/runs/35753705495) | 256/256 精确匹配，success |
+| 破坏输出 | `7c12cc384926aa410df3bc47ebb9a4804889fdda` | [IR 负例运行](https://github.com/Jopqior/tile-rs/actions/runs/35753801302) | actual=1、reference=0，退出 1，failure |
+| 恢复 | `c00aa197d065874bd4c698db0eeba233979e4710` | [IR 恢复运行](https://github.com/Jopqior/tile-rs/actions/runs/35753920477) | 256/256 精确匹配，success |
+
+两个模式在以上三次运行中均得到相同的通过/失败/通过状态。负例仍是修改计算完成后的一个输出，不是修改 IR。生成模式的原始日志节选：[正常](pto-cpu-sim-evidence/ir-positive.txt)、[负例](pto-cpu-sim-evidence/ir-negative.txt)、[恢复](pto-cpu-sim-evidence/ir-restored.txt)。workflow 另上传输入 IR、生成 C++ 和数值输入输出，保留 30 天。
+
+实施过程中另有一次 [workflow 配置失败](https://github.com/Jopqior/tile-rs/actions/runs/35753593920)：job 级 env 不接受 `runner.temp` 上下文，尚未启动测试；移到 step env 后修复。它不计作数值负例。本地最初尝试的 tar 发布包要求 Python 3.11，因此实际实验改用明确匹配 Python 3.12 的校验过的 wheel，没有绕过 ABI 检查。
+
+### 对 tile-rs 的含义
+
+现有证据从“手写 PTO C++ 能运行”推进到“最小 PTO IR 经工具生成 C++ 后能运行”。若 tile-rs 能提供相容的 `.pto`，可以采用同类接入方式；但仍须验证 tile-rs 的实际输出、工具版本、ABI、指令与 shape/dtype。此次不证明 Rust→PTO emission 可用，也不证明任意 PTO IR、PTOAS 输出、NPU 二进制都能在 CPU-SIM 运行。
+
 ## 日志保留
 
 GitHub 日志有保留期。以下文本保存从三次完整日志中筛出的原始环境及结果行，不冒充完整日志：

@@ -1,0 +1,23 @@
+Selected verbatim generated-job lines from gh run view --log; not a full log.
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.4477258Z Linux runnervmlun5p 6.17.0-1022-azure #22-Ubuntu SMP Mon Jul 27 17:24:03 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.4477968Z ImageOS=ubuntu24 ImageVersion=20260907.300.1 Runner=GitHub Actions 1000000155
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7061832Z 757d:00:00.0 Non-Volatile memory controller [0108]: Microsoft Corporation Device [1414:00a9]
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7062577Z 7870:00:00.0 Ethernet controller [0200]: Microsoft Corporation Device [1414:00ba]
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7063180Z c05b:00:00.0 Non-Volatile memory controller [0108]: Microsoft Corporation Device [1414:00a9]
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7194686Z Ascend devices/installations: []
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7304413Z g++-13	13.3.0-6ubuntu2~24.04.1
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7304799Z git	1:2.55.0-0ppa1~ubuntu24.04.2
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7305072Z libstdc++-13-dev:amd64	13.3.0-6ubuntu2~24.04.1
+add (generated)	Record host and check absence of exposed NPU	2026-09-22T16:23:39.7305400Z python3	3.12.3-0ubuntu2.1
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:39.7510661Z Python 3.12.3
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:41.8133988Z  * branch            82361dd56d4ea5d0dc99f14028fe5eb8b5c46d19 -> FETCH_HEAD
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:42.8229585Z /home/runner/work/_temp/pto-add/ptoas-0.65-cp312-cp312-manylinux_2_34_x86_64.whl: OK
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:46.9513650Z ptoas 0.65
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:47.0073232Z 18d4eadf447fdd9978d2bb1a2beabb24f83f0f63069552c9b240ac60a7ccd225  /home/runner/work/_temp/pto-add/input.pto
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:47.0074180Z a897a3b82a374ab166b493636828d41b674fc0c1c24f1d53a1f78deb900f4e94  /home/runner/work/_temp/pto-add/generated.cpp
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:47.0074750Z PROGRAM_MODE=generated
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:48.4645129Z FAIL: index=0, actual=1.0, reference=0.0, atol=rtol=0
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:48.4645556Z NEGATIVE PROBE: changed CPU-SIM output[0] by +1.0
+add (generated)	Build real CPU-SIM and compare independent reference	2026-09-22T16:23:48.4690725Z ##[error]Process completed with exit code 1.
+add (generated)	Preserve IR, unmodified generated C++ and test data	2026-09-22T16:23:48.4759851Z   path: /home/runner/work/_temp/pto-add/input.pto
+add (generated)	Preserve IR, unmodified generated C++ and test data	/home/runner/work/_temp/pto-add/generated.cpp

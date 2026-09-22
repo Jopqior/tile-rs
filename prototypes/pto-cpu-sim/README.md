@@ -4,16 +4,24 @@ Throwaway，仅回答[验证 PTO CPU-SIM 的 f32 add 无卡正确性 CI](https:/
 
 ## 运行
 
-需要 Git、Python 3、GCC 13（C++23）和 GitHub 网络访问，无 pip、CANN、GoogleTest 或 NPU 依赖。
+手写 C++ 模式需要 Git、Python 3、GCC 13（C++23）和 GitHub 网络访问，无 pip、CANN、GoogleTest 或 NPU 依赖。
+
+生成代码模式另需 Linux x86_64、Python 3.12（含 venv/pip）、curl、sha256sum。使用固定版本及摘要的 PTOAS 0.65 wheel，不安装其他 pip 依赖。
 
 ```sh
 bash prototypes/pto-cpu-sim/run.sh
 INJECT_ERROR=1 bash prototypes/pto-cpu-sim/run.sh # 预期退出 1
+PROGRAM_MODE=generated bash prototypes/pto-cpu-sim/run.sh
+PROGRAM_MODE=generated INJECT_ERROR=1 bash prototypes/pto-cpu-sim/run.sh # 预期退出 1
 ```
 
 `CXX` 可覆盖编译器。脚本在临时目录下载固定 PTO ISA commit `82361dd56d4ea5d0dc99f14028fe5eb8b5c46d19`，以 `-D__CPU_SIM -std=c++23 -O0` 编译，结束清理临时目录。上游源码及许可证原样保留，不复制模拟实现。
 
 ## 实验
+
+两种模式使用同一个独立参考比较器。`handwritten` 编译 `add.cpp`；`generated` 将手写 `add.pto` 经 PTOAS（`--pto-arch=a3 --enable-insert-sync`）生成 C++，原样包含进 `generated-host.cpp` 后编译。host 仅负责输入输出与调用，没有手写加法替代生成 kernel。IR 不是 tile-rs 生成产物。
+
+`BUILD_DIR=/absolute/empty/path` 可保留构建目录（不自动清理）；默认使用临时目录并清理。CI 上传 IR、原始生成 C++ 与输入输出数据，保留 30 天。
 
 - 独立 C++ kernel 调用真实上游 `TLOAD → TADD → TSTORE`，单 tile，f32，shape `[1,256]`。
 - Python 标量参考端生成 256 对正、负、零、抵消及分数输入，通过文件传给 kernel；参考不调用 PTO，也不以 kernel 输出生成 golden。
