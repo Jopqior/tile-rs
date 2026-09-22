@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-已在隔离 Ubuntu 22.04 x86_64 容器完成无驱动 Toolkit 安装。两入口经真实 Bisheng/camodel 执行均 256/256 精确匹配，破坏输出后均非零失败，恢复后通过。GitHub 托管 runner 实测待执行；本地结果不能代替 Actions 证据。
+已在 GitHub 托管 Ubuntu 22.04 x86_64 runner 完成无驱动 Toolkit 安装。手写 PTO C++ 和 `.pto → PTOAS → C++` 两入口均经真实 Bisheng/camodel 执行，256/256 精确匹配；破坏输出后两 job 均因数值比较退出 1，恢复后再次通过。这个最小独立 kernel 的无卡 CI 可行，不是 CPU-SIM 或仅编译成功。
 
 用户确认覆盖两个入口：独立手写 PTO C++，以及独立 `.pto → PTOAS → C++`。两者均须经设备编译器和 camodel 执行，与独立 CPU 参考比较，并故意破坏输出验证失败退出。不是 tile-rs 全链路测试。
 
@@ -60,9 +60,35 @@ sha256: 985b8c7b68a5f85af7c28c3514f3d3f6baec1e0784669f2bba0cce2b502dabe9
 
 公开下载 URL 不代表可以再分发。实验不上传 Toolkit、Bisheng、camodel 库或打包镜像，也不将它们放入公开缓存；不发布模型内部 trace、寄存器 dump 或性能测量。
 
-## 待验证
+## GitHub Actions 实测证据
 
-- 编译器实际版本输出、模型独立 build 版本、动态库绑定及闭源组件的更细许可归属。
-- Ubuntu x86_64 GitHub 托管 runner 上的实际安装和编译运行条件。
-- 两入口的真实 camodel 数值比较、失败探针和 Actions 链接。
-- 可复用条件与模拟覆盖边界。
+下表每次均独立运行 handwritten/generated 两个 matrix job；正常和恢复时两者成功，负例时两者都在比较步骤失败，安装成功且没有 skip 或 continue-on-error。
+
+| 运行 | 固定提交 | 结果 |
+|---|---|---|
+| [正常](https://github.com/Jopqior/tile-rs/actions/runs/35761288167) | `135f2ddbc4f3e35ec560c17de534d642912a97c5` | 两入口 256/256 精确匹配 |
+| [负例](https://github.com/Jopqior/tile-rs/actions/runs/35761853455) | `1b14de4bc63641581cc6a1dd0c4c94c1a9b40d48` | 首元素加 1，actual=1.0、reference=0.0，两 job exit 1 |
+| [恢复](https://github.com/Jopqior/tile-rs/actions/runs/35762428063) | `02325b6b675c79ca956fee6aef4acb98d7bd1232` | 两入口再次精确匹配 |
+
+[首次 workflow 验证失败](https://github.com/Jopqior/tile-rs/actions/runs/35761177708)发生在 runner 分配前：job 级 env 不接受 `runner.temp`。将路径设置移入首个步骤后修复，不算 camodel 运行失败或负例证据。
+
+已下载六份数值 artifact 再次独立重算，两个入口的正常/负例/恢复分别只有 0/1/0 个不匹配元素，负例仅 index 0。三次 generated.cpp 字节一致。长期证据保存在 [camodel-evidence/](camodel-evidence/)：输入输出、比较文本、host/工具版本和未修改生成 C++；Actions artifact 保留 14 天，链接日志也受平台保留期限制。
+
+GitHub runner inventory：`ImageOS=ubuntu22`，`ImageVersion=20260907.292.1`，x86_64；Python 3.10.12，GCC/G++ 11 默认发行版工具，Bisheng clang 15.0.5。无 exposed Ascend 设备，未安装 driver/firmware。CANN/模型 ELF hash 与上述本地包库存一致。
+
+## 数值合同与两入口
+
+- 输入是两个 f32 `[1,256]` tile，含零、正负数、抵消及非整数二进制精确分数。独立 Python 标量相加作为参考；输入及和在 binary32 中精确可表示，`atol=rtol=0` 合理，但不是通用浮点误差规范。
+- 输出先写入 NaN，返回后检查长度和有限性，再比较全部元素；没有把首次模拟输出当 golden。
+- 手写 kernel 使用 PTO TLOAD/TADD/TSTORE 和设备流水同步；generated 使用 PTOAS 0.65 `--pto-arch=a3 --enable-insert-sync` 生成 C++，原样 include，再由 Bisheng `dav-c220-vec` 编译，在 Ascend910B1/dav_2201 camodel 执行。不是所有 PTOAS target 的覆盖证明。
+- 两者共用 ACL host 和独立 oracle，检查 ACL 调用、launch last-error、stream sync，任何失败非零退出；没有 `__CPU_SIM` 定义。
+- 负例只破坏返回数值并验证 oracle/CI 的失败传播，不是向设备 kernel 注入错误，也不证明能发现所有可能的 kernel 缺陷。
+- host 强制检查五个关键 rt 符号全局解析到 camodel；真实调用的额外动态绑定核对来自本地私有日志，不是公开 CI 调用跟踪证据。
+
+## 可复用条件和覆盖边界
+
+复用入口见 [原型 README](../../prototypes/pto-camodel/README.md)。需要获准使用的 CANN、官方 OBS/GitHub/Ubuntu/Python 软件源网络访问、x86_64 Ubuntu 22.04、至少 20 GiB 安装前可用空间和匹配工具链。安装完整 Toolkit，没有镜像预装、SDK cache、真实 NPU 或外部账号凭据；软件分发和使用仍遵循许可。包/PTOAS wheel 用固定 SHA256，PTO ISA 固定 commit；Ubuntu 发行版依赖仍可更新，不承诺逐字节重现全部环境。
+
+本次成功只覆盖固定 shape 和精确可表示输入的 f32 add，不覆盖 NaN/Inf/subnormal 算术、其他 dtype/shape/指令、一般舍入误差、并发/多卡通信、真实驱动/硬件正确性或性能。独立手写 IR 不是 tile-rs 产物，不证明 Rust→PTO 链路或正式门禁可直接启用。
+
+模型独立 build 版本、其他 host/SoC/CANN 版本的兼容性和闭源组件更细许可归属仍未解决，不能从本次 PASS 外推。正式 CI 设计、依赖裁剪和生产 runner 选择不在本票范围。

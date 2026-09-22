@@ -59,7 +59,7 @@ kernel. The workflow initially has `INJECT_ERROR: '0'`; change it to `'1'` and
 push for a deliberately red matrix, then restore to `'0'`. It only responds to
 its prototype branch and its own paths, with fail-fast disabled.
 
-## Local evidence and remaining boundary
+## Evidence and boundary
 
 Completed in an isolated Ubuntu 22.04 Docker container (not GitHub Actions):
 
@@ -70,8 +70,15 @@ Completed in an isolated Ubuntu 22.04 Docker container (not GitHub Actions):
 - Both restored to normal: PASS; unprivileged generated run also PASS.
 - Actual Bisheng banner: clang 15.0.5, clang/flang build `5c68a1cb1231`,
   dated `2026-07-30T20:53:21+08:00`.
-- No GitHub Actions execution, commit or push was performed in this implementation
-  step. Hosted-runner download/install/runtime behavior still needs that test.
+
+GitHub-hosted Ubuntu 22.04 subsequently completed both modes:
+[normal PASS](https://github.com/Jopqior/tile-rs/actions/runs/35761288167),
+[corrupted-output failure](https://github.com/Jopqior/tile-rs/actions/runs/35761853455),
+and [restored PASS](https://github.com/Jopqior/tile-rs/actions/runs/35762428063).
+Both negative jobs failed specifically at index 0 comparison with exit 1.
+See the [experiment report and preserved evidence](../../docs/research/camodel-prototype.md).
+This only covers the fixed add/input contract, not tile-rs integration, other
+instructions, general floating-point behavior, hardware correctness or performance.
 
 ## Publication boundary
 

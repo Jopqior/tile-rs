@@ -1,0 +1,20 @@
+PROGRAM_MODE=handwritten
+INJECT_ERROR=0
+PTO_ISA=82361dd56d4ea5d0dc99f14028fe5eb8b5c46d19
+CANN_TOOLKIT=9.1.0
+TOOLKIT_SHA256=985b8c7b68a5f85af7c28c3514f3d3f6baec1e0784669f2bba0cce2b502dabe9
+SOC=Ascend910B1; manifest mapping=dav_2201; arch=dav-c220-vec
+exposed_Ascend_devices=none; driver/firmware_install=none
+Linux runnervm7g52i 6.8.0-1064-azure #72~22.04.1-Ubuntu SMP Wed Jul 22 23:39:45 UTC 2026 x86_64 x86_64 x86_64 GNU/Linux
+Python 3.10.12
+2026-07-30T20:53:21+08:00 clang version 15.0.5 (clang-5c68a1cb1231 flang-5c68a1cb1231)
+Target: x86_64-unknown-linux-gnu
+Thread model: posix
+InstalledDir: /home/runner/work/_temp/ascend-prototype/cann-9.1.0/bin
+647f5772aab1b93dd59f088721c94c3edae1212c92b6dc4117b3c5742548252a  /home/runner/work/_temp/ascend-prototype/cann-9.1.0/bin/bisheng
+f2dcf3deaf635d217b64747d15ba2bb72e52682f654188f684e150a681464415  /home/runner/work/_temp/ascend-prototype/cann-9.1.0/tools/simulator/Ascend910B1/lib/libruntime_camodel.so
+g++	4:11.2.0-1ubuntu1
+gcc	4:11.2.0-1ubuntu1
+libc6:amd64	2.35-0ubuntu3.14
+libstdc++6:amd64	12.3.0-1ubuntu1~22.04.3
+python3	3.10.6-1~22.04.1
