@@ -18,14 +18,15 @@ jobs:
     env:
       PROGRAM_MODE: ${{ matrix.program }}
       INJECT_ERROR: '0'
-      BUILD_DIR: ${{ runner.temp }}/camodel-add
-      INSTALL_ROOT: ${{ runner.temp }}/ascend-prototype
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
       - name: Record clean no-device host
         run: |
+          export BUILD_DIR="$RUNNER_TEMP/camodel-add"
+          echo "BUILD_DIR=$BUILD_DIR" >> "$GITHUB_ENV"
+          echo "INSTALL_ROOT=$RUNNER_TEMP/ascend-prototype" >> "$GITHUB_ENV"
           mkdir -p "$BUILD_DIR"
           {
             uname -a
