@@ -4,13 +4,13 @@
 
 ## 结论
 
-**无物理 NPU 可以做算子结果比较。** 本次在 GitHub 托管 Ubuntu runner 上，分别用 PTO CPU-SIM 和 CANN camodel 跑通最小 f32 add；两者都覆盖手写 PTO C++、独立 `.pto → PTOAS → C++` 两种入口。正常输出与独立 CPU 参考一致，故意破坏输出后 CI 失败，恢复后再次通过。
+本次在没有物理 NPU 的 GitHub 托管 Ubuntu runner 上，用 PTO CPU-SIM 和 CANN camodel 分别跑通了最小 f32 add。两者都测试了手写 PTO C++、独立 `.pto → PTOAS → C++` 两种入口：正常输出与独立 CPU 参考一致，故意破坏输出后 CI 失败，恢复后再次通过。
 
-**这还不是 tile-rs 的 Rust→PTO 全链路验证，也不能替代真机。** 同类项目通常分开 host 检查、目标编译、模拟和 NPU 执行。实际驱动/runtime 集成、芯片上的数值与同步行为、性能仍需兼容真机；编译通过、模拟通过和真机通过分别提供不同证据。
+目前验证到的是独立 kernel，尚未打通 tile-rs 的 Rust→PTO 全链路。同类项目通常分开 host 检查、目标编译、模拟和 NPU 执行，各阶段的通过结果不能相互替代。实际驱动/runtime 集成、芯片上的数值与同步行为，以及性能，仍需在兼容真机上验证。
 
 ## 同类项目怎么测，真机从哪里来
 
-下表是已查快照与运行样本，不代表全部测试覆盖或持续可用性。真机来自项目接入的专用 runner 或设备池，不是所查 GitHub 标准托管 Ubuntu runner；设备产权均未核实，不能把 self-hosted 写成“项目自有”。
+下表汇总已查版本和运行样本，未覆盖全部测试，也不保证这些 CI 持续可用。其中的真机由项目接入的专用 runner 或设备池提供，所查 GitHub 标准托管 Ubuntu runner 不提供这些 NPU。设备产权均未核实，不能仅凭 self-hosted 认定为项目自有。
 
 | 项目 | CI 与正确性测试 | 实际执行证据及设备提供方式 |
 |---|---|---|
@@ -21,7 +21,7 @@
 | [PyPTO / pypto-lib](ascend-ci-landscape.md) | CPU 单测/codegen、CPU-SIM、真机系统测试 | 有模拟与真机 job 记录，PyPTO 另取得真实 pytest 日志；真机走专用 runner/任务队列。所查 `a2a3sim/a5sim` 是 CPU-SIM，不是 camodel。[更正依据][camodel] |
 | [其他参照](ascend-ci-landscape.md) | CATLASS 有 host stub UT；AscendNPU-IR 有 host 构建及 NPU 示例；FlagGems 有 Ascend 算子测试配置；vllm-ascend 分 CPU/NPU 测试 | 本轮未取得这些候选的实际 NPU 测试日志；stub、示例或配置不当作真机成功，抽样中跳过的 NPU job 也不计入。 |
 
-**Ascend-CI 是公共 CI 项目，不是已确认向任意仓库开放的 NPU 服务。** 已调查其 Liger Ascend 与 llama.cpp CANN 工作流：Liger 日志有两条 910B3 设备记录及真实 pytest；llama.cpp 算子循环会汇总失败后继续，workflow 绿色不等于所有算子通过。它使用接入的 NPU runner 与设备容器。可借鉴公开配置，但 runner 准入、设备使用权、网络和凭据需另行确认，设备产权未知。[调查与运行证据](ascend-ci-landscape.md)
+Ascend-CI 是使用 NPU runner 和设备容器的公共 CI 项目。本次调查了它的 Liger Ascend 与 llama.cpp CANN 工作流：Liger 日志有两条 910B3 设备记录及实际 pytest 执行；llama.cpp 算子循环会汇总失败后继续，因此 workflow 绿色不等于所有算子通过。公开配置可供借鉴，但尚未确认外部仓库能否使用其 NPU。runner 准入、设备使用权、网络和凭据需另行核实，设备产权也未知。[调查与运行证据](ascend-ci-landscape.md)
 
 ## 两个模拟器及本次原型结果
 
@@ -32,9 +32,9 @@
 | 覆盖与边界 | 可比较模型支持范围内的功能结果；不验证设备二进制、硬件时序或性能 | 可比较指定目标模型的执行结果，覆盖此次目标编译和模拟运行；不证明真实驱动、硬件行为或性能 |
 | 两入口运行结果 | [正常通过][cpu-ok] / [负例失败][cpu-bad] / [恢复通过][cpu-restored] | [正常通过][cam-ok] / [负例失败][cam-bad] / [恢复通过][cam-restored] |
 
-两个原型均使用 PTOAS 0.65 和固定 PTO ISA 版本。生成 C++ 原样使用，只补 host 输入输出与调用。输入为固定 `[1,256]` f32 add，值及其和均可精确表示；独立 Python 标量参考逐元素比较，并检查长度与有限性。负例在计算完成后将首个输出加 1，两入口均因比较不匹配退出 1，验证错误能传递为 CI 失败，不是故意制造下载或编译故障。
+两个原型均使用 PTOAS 0.65 和固定 PTO ISA 版本。生成的 C++ 原样使用，只补 host 输入输出与调用。测试固定 `[1,256]` f32 add，输入值及其和均可精确表示，以独立 Python 标量参考逐元素比较，并检查长度与有限性。负例在计算完成后将首个输出加 1，两入口均因结果不匹配退出 1。这确认了数值错误能使 CI 失败；下载或编译故障不计作此处的负例。
 
-该结果只证明此最小用例可行，不覆盖其他 shape、dtype、一般浮点舍入、NaN/Inf 运算或多卡通信。CPU-SIM 无需 SDK；camodel 需要匹配的 Toolkit、下载网络、安装空间及许可条件，不能把“无卡”写成“无软件依赖”。本次未再分发 SDK。版本、命令和长期证据保留在 [CPU-SIM 实验记录][cpu] 与 [camodel 实验记录][camodel]，避免只依赖有保留期的 Actions 日志。
+测试范围仅限此最小用例，未覆盖其他 shape、dtype、一般浮点舍入、NaN/Inf 运算或多卡通信。CPU-SIM 无需 SDK；camodel 虽然不用卡，仍需匹配的 Toolkit、可用的下载网络、安装空间和许可。本次未再分发 SDK。Actions 日志有保留期，版本、命令和长期证据另存于 [CPU-SIM 实验记录][cpu] 与 [camodel 实验记录][camodel]。
 
 ## 接入 tile-rs 还缺什么
 
@@ -44,7 +44,7 @@
 - 实际产物与 PTOAS、PTO headers、CANN 的版本兼容，host 调用/launch ABI，以及对应算子的独立参考和误差规则。
 - 若验证真机，目标设备、驱动/固件、运行库与访问条件；同行 runner 标签或设备数量不能直接变成 tile-rs 的环境要求。
 
-上述缺口不影响“两个独立最小无卡原型可行”的结论，但限制了向完整链路的推广。[tile-rs 路径核查](tile-rs-pto-path.md)。原型保留在独立实验分支，未接入 main 正式门禁；本简报不提出硬件选型、采购数量或环境协调请求。
+这些是从独立原型接入 tile-rs 完整链路时仍需解决的问题，详见 [tile-rs 路径核查](tile-rs-pto-path.md)。原型保留在独立实验分支，未接入 main 正式门禁。本简报不提出硬件选型、采购数量或环境协调请求。
 
 [cpu]: https://github.com/Jopqior/tile-rs/blob/50eaa4be2fe0e59e464dc7d9bba31bcd054452c6/docs/research/pto-cpu-sim-prototype.md
 [camodel]: https://github.com/Jopqior/tile-rs/blob/4d875e05c82afe0e6f1036cc5caeb386cb40b9e6/docs/research/camodel-prototype.md
