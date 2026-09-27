@@ -2,7 +2,7 @@
 name: Prototype Rust PTO Ascend
 on:
   push:
-    branches: [prototype/rust-pto-ascend-ci]
+    branches: [prototype/61-rust-pto-ascend-ci]
     paths:
       - '.github/workflows/prototype-rust-pto-ascend.yml'
       - 'prototypes/rust-pto-ascend/device/**'

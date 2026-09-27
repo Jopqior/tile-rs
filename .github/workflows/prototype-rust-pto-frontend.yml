@@ -2,7 +2,7 @@
 name: prototype-rust-pto-frontend
 on:
   push:
-    branches: [prototype/rust-pto-ascend-ci]
+    branches: [prototype/61-rust-pto-ascend-ci]
     paths:
       - 'prototypes/rust-pto-ascend/frontend/**'
       - '.github/workflows/prototype-rust-pto-frontend.yml'

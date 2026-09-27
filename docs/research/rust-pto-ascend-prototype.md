@@ -1,6 +1,8 @@
 # Rust→PTO→Ascend CI 原型
 
-独立分支：`prototype/rust-pto-ascend-ci`。不接入 main，不注册或调用未获授权的真机。
+归档：[补录新版 Rust→PTO→camodel 验证与 NPU 资源申请草稿](https://github.com/Jopqior/tile-rs/issues/61)。
+
+独立分支：`prototype/61-rust-pto-ascend-ci`。不接入 main，不注册或调用未获授权的真机。
 
 ## 验证范围
 
@@ -24,11 +26,11 @@
 ```sh
 # 无物理 NPU；实际 Rust 产物进入 CANN simulator。
 gh workflow run prototype-rust-pto-ascend.yml \
-  --repo Jopqior/tile-rs --ref prototype/rust-pto-ascend-ci
+  --repo Jopqior/tile-rs --ref prototype/61-rust-pto-ascend-ci
 
 # 仅在 runner 注册、权限与下表变量就绪后使用。
 gh workflow run prototype-rust-pto-ascend.yml \
-  --repo Jopqior/tile-rs --ref prototype/rust-pto-ascend-ci -f run_npu=true
+  --repo Jopqior/tile-rs --ref prototype/61-rust-pto-ascend-ci -f run_npu=true
 ```
 
 ## 真机接入合同
