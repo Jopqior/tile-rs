@@ -87,10 +87,11 @@ jobs:
             grep -q 'mlir_to_msl has no arm for `__tile_window_mask_f32`' "$PROBE_DIR/sample.log"
             echo 'Known shipped-sample MSL refusal recorded in sample.log; probing minimal add kernel.'
           fi
-          # 'msl' maps to backend codegen path 'metal': it avoids an Ascend SDK on macOS.
-          # Its intermediate is emitted by rustc_codegen_tile, not copied from a fixture.
-          env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t msl \
-            --keep-dir "$PROBE_DIR/kernel" -o "$PROBE_DIR/add_generated.metal" \
+          # The released Metal path refuses even this minimal add because it audits
+          # __tile_window_mask_f32 in tile_std. Try the backend's PTO path directly;
+          # only its compiler-produced kept intermediate may feed the open PTO emitter.
+          env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t pto \
+            --keep-dir "$PROBE_DIR/kernel" -o "$PROBE_DIR/add_generated.backend.pto.mlir" \
             2>&1 | tee "$PROBE_DIR/kernel.log"
           cp "$PROBE_DIR/kernel/add_generated.1.mlir.mlir" "$PROBE_DIR/add_generated.mlir"
           test -s "$PROBE_DIR/add_generated.mlir"
