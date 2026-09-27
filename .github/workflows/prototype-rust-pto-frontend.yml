@@ -74,7 +74,8 @@ jobs:
           env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t msl \
             --keep-dir "$PROBE_DIR/kernel" -o "$PROBE_DIR/add_generated.metal" \
             2>&1 | tee "$PROBE_DIR/kernel.log"
-          cp "$PROBE_DIR/kernel/add_generated.1.mlir.mlir" "$PROBE_DIR/add_generated.mlir"
+          # The default O2 route includes tile -> tile, so MLIR is hop 2, not 1.
+          cp "$PROBE_DIR/kernel/add_generated.2.mlir.mlir" "$PROBE_DIR/add_generated.mlir"
           test -s "$PROBE_DIR/add_generated.mlir"
           # Explicit second invocation: force the open, current-source PTO emitter to run,
           # rather than accepting the proprietary backend's optional target_source.
