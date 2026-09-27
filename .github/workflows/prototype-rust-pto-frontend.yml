@@ -20,11 +20,18 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Checkout the published backend's matching Rust DSL and macros
+        uses: actions/checkout@v5
+        with:
+          repository: yijunyu/tile-rs
+          ref: c3c8ec0169bd02757b51370ba9c6ec3b116b833d
+          path: release-sdk
+          persist-credentials: false
       - name: Set isolated paths for this runner
         run: |
           echo "PROBE_DIR=$RUNNER_TEMP/rust-pto-frontend" >> "$GITHUB_ENV"
           echo "TILE_HOME=$RUNNER_TEMP/tile-home" >> "$GITHUB_ENV"
-          echo "TILE_STD_PATH=$GITHUB_WORKSPACE/crates/tile_std" >> "$GITHUB_ENV"
+          echo "TILE_STD_PATH=$GITHUB_WORKSPACE/release-sdk/crates/tile_std" >> "$GITHUB_ENV"
       - name: Install exact backend-compatible nightly
         run: |
           rustup toolchain install nightly-2025-08-04 --profile minimal --component rustc-dev --component llvm-tools --component rust-src
@@ -35,62 +42,35 @@ jobs:
           test "$(uname -m)" = arm64
           cargo +stable build --locked --release --manifest-path crates/tile_cli/Cargo.toml --bin tile
           crates/tile_cli/target/release/tile install rustc_codegen_tile
-      - name: Work around CLI-injected duplicate attributes in a scratch tile_std copy
+      - name: Assert release source provenance (no edited DSL or private binary)
         run: |
           set -euo pipefail
-          overlay="$RUNNER_TEMP/tile-std-overlay"
-          mkdir -p "$overlay"
-          cp -R crates/tile_std crates/tile_std_macros "$overlay/"
-          # lower_rs.rs injects register_tool via -Zcrate-attr for every target crate;
-          # tile_std/src/lib.rs also declares it and nightly rejects the duplicate
-          # (E0636). Keep the checked-out source untouched, remove ONLY the two
-          # duplicated declarations in a throwaway copy, and use that as TILE_STD_PATH.
-          python3 - "$overlay/tile_std/src/lib.rs" <<'PY'
-          import pathlib
-          import sys
-          path = pathlib.Path(sys.argv[1])
-          source = path.read_text()
-          for line in ('    register_tool\n', '#![register_tool(tile)]\n'):
-              if source.count(line) != 1:
-                  raise SystemExit(f'expected one occurrence of {line!r}, got {source.count(line)}')
-              source = source.replace(line, '')
-          path.write_text(source)
-          PY
+          test "$(git -C release-sdk rev-parse HEAD)" = c3c8ec0169bd02757b51370ba9c6ec3b116b833d
+          test -f "$TILE_STD_PATH/Cargo.toml"
+          test -f release-sdk/crates/tile_std_macros/Cargo.toml
+          if grep -qE 'register_tool|__tile_window_mask_f32' \
+              "$TILE_STD_PATH/src/lib.rs" "$TILE_STD_PATH/src/tile.rs"; then
+            echo 'Release DSL unexpectedly contains an incompatible attribute or intrinsic' >&2
+            exit 1
+          fi
           mkdir -p "$PROBE_DIR"
-          # Preserve the exact adjustment alongside compiler outputs, not only this recipe.
-          set +e
-          diff -u crates/tile_std/src/lib.rs "$overlay/tile_std/src/lib.rs" \
-            > "$PROBE_DIR/tile_std-attr-dedup.diff"
-          diff_status=$?
-          set -e
-          test "$diff_status" -eq 1
           printf '%s\n' \
-            'Pristine checkout failed before kernel lowering (rustc E0636, duplicate register_tool):' \
-            'https://github.com/Jopqior/tile-rs/actions/runs/36335776434' \
-            'This run compiles a scratch COPY of tile_std with only the two duplicated crate attributes removed.' \
-            'See tile_std-attr-dedup.diff; current checkout, released backend, and Rust kernel are unmodified.' \
+            'Rust source: current checkout prototypes/rust-pto-ascend/frontend/add_generated.rs' \
+            'Rust frontend tile_std + tile_std_macros: unmodified yijunyu/tile-rs commit c3c8ec0169bd02757b51370ba9c6ec3b116b833d (release v0.0.2+nightly-2025-08-04).' \
+            'Codegen backend: v0.0.2+nightly-2025-08-04, installed with verified current CLI manifest SHA256.' \
+            'Compiler: nightly-2025-08-04. PTO emitter: current checkout tile CLI and mlir_to_pto.rs.' \
+            'Metal is used only to save compiler MLIR; native PTO requires ASCEND_HOME_PATH on macOS.' \
+            'Prior current-DSL failures: https://github.com/Jopqior/tile-rs/actions/runs/36335776434 and https://github.com/Jopqior/tile-rs/actions/runs/36336155872' \
             > "$PROBE_DIR/PROVENANCE.txt"
-          echo "TILE_STD_PATH=$overlay/tile_std" >> "$GITHUB_ENV"
       - name: Compile Rust with the actual backend and emit current-source PTO
         run: |
           set -euo pipefail
           mkdir -p "$PROBE_DIR"
           tile=crates/tile_cli/target/release/tile
-          # Diagnostic only: the shipped softmax currently reaches the real backend,
-          # then fails its MSL lowering at unsupported __tile_window_mask_f32. Keep
-          # that refusal visible; require the exact known failure or successful MLIR.
-          if env -u RUSTFLAGS "$tile" crates/tile_cli/testdata/forms/softmax.rs -t msl \
-            --keep-dir "$PROBE_DIR/sample" -o "$PROBE_DIR/sample.metal" \
-            2>&1 | tee "$PROBE_DIR/sample.log"; then
-            test -s "$PROBE_DIR/sample/softmax.1.mlir.mlir"
-          else
-            grep -q 'mlir_to_msl has no arm for `__tile_window_mask_f32`' "$PROBE_DIR/sample.log"
-            echo 'Known shipped-sample MSL refusal recorded in sample.log; probing minimal add kernel.'
-          fi
-          # PTO backend requires ASCEND_HOME_PATH on macOS (run 36336323316).
           # Choose Metal only to capture the compiler's neutral MLIR intermediate;
-          # it currently refuses __tile_window_mask_f32 (run 36336155872).
-          # This fails closed until a compatible backend release fixes that error.
+          # the PTO backend instead requires ASCEND_HOME_PATH on macOS (36336323316).
+          # The release-matched DSL has no __tile_window_mask_f32 (which made
+          # the published backend reject the newer DSL, run 36336155872).
           env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t msl \
             --keep-dir "$PROBE_DIR/kernel" -o "$PROBE_DIR/add_generated.metal" \
             2>&1 | tee "$PROBE_DIR/kernel.log"
