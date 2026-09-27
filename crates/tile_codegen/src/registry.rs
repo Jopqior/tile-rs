@@ -31,9 +31,10 @@ impl TargetRegistry {
         }
     }
 
-    /// Registry pre-populated with every target compiled into this crate: the
-    /// debug reference target always, and the Metal emitter under `emitters`.
-    /// A downstream crate adds more with [`register`](Self::register).
+    /// Registry pre-populated with every built-in target compiled into this
+    /// build (the open reference targets always; the closed Ascend targets when
+    /// the `ascend` feature is on). A closed/downstream crate can add more with
+    /// [`register`](Self::register).
     pub fn with_builtin() -> Self {
         let mut r = Self::new();
         crate::targets::register_builtin(&mut r);

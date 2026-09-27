@@ -18,7 +18,7 @@ The same `tile_std` kernel lowers to each backend below, selected with `TILERS_C
 
 | Backend | `TILERS_CODEGEN_PATH` | Target language | Codegen | On-HW |
 |---------|----------------------|-----------------|:------:|-------|
-| [Apple GPU](https://github.com/yijunyu/tile-rs-metal) | `metal`   | Metal Shading Language       | ✅ | ✅ M2 Max / M4 |
+| Apple GPU       | `metal`   | Metal Shading Language       | ✅ | ✅ M2 Max / M4 |
 | Vulkan          | `vulkan`  | GLSL → SPIR-V                | ✅ | ✅ Apple Silicon (MoltenVK) |
 | Ascend NPU      | `cpp`, `pto` | AscendC C++ / PTO-MLIR    | ✅ | ✅ 910B |
 | NVIDIA GPU      | `cuda`    | CUDA C                       | ✅ | ✅ T4 / H20; also AMD gfx1151 via ROCm shim |
@@ -67,7 +67,7 @@ Each backend supplies its own host runtime, registered behind the `CodegenTarget
 | `tile_codegen` | The `CodegenTarget` trait + `TargetRegistry` — the pluggable backend skeleton |
 | `tile_spec` | Executable Gherkin (Given/When/Then) spec layer + the codegen-generality test suite |
 | `tile_hal` | Vendor-neutral Hardware Abstraction Layer (host-side device/stream/buffer + backend selection) |
-| `rustc_codegen_tile` | Custom rustc codegen backend (MIR → MLIR → backend source). The Apple Metal emitter (`src/mlir_to_msl.rs`) and the MLIR parser it reads (`src/mlir_parse.rs`) are open source, exercised by `tile_codegen` and `tile_spec`. Every other emitter, and the LLVM-dependent backend that links them into a runnable `librustc_codegen_tile.so`, ship as a prebuilt release artifact, so all 15 targets remain usable. |
+| `rustc_codegen_tile` | Custom rustc codegen backend (MIR → MLIR → backend source). The 15 backend **emitters** are open source — `src/mlir_to_*.rs`, exercised by `tile_spec`. The LLVM-dependent backend that links them into a runnable `librustc_codegen_tile.so` is distributed as a prebuilt release artifact (it needs LLVM 20; the emitters do not). |
 
 ## Quick Start
 

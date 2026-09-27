@@ -9222,8 +9222,8 @@ fn generate_func_msl(func: &MlirFunc, out: &mut String) -> Result<(), String> {
         // LLM inference ops
         KernelType::SiLU => emit_silu_msl(out),
         KernelType::CastBf16F32 => emit_cast_bf16_msl(out),
-        KernelType::MatmulF32 => emit_matmul_f32_msl(out),
-        KernelType::MatmulTransposed => emit_matmul_transposed_msl(out),
+        KernelType::MatmulF32 => emit_matmul_f32_msl(out, func.k_unroll),
+        KernelType::MatmulTransposed => emit_matmul_transposed_msl(out, func.k_unroll),
         // Fused ops
         KernelType::SiLUMul => emit_silu_mul_msl(out),
         KernelType::ResidualAdd => emit_binop_msl(out, "+"),
@@ -23654,7 +23654,20 @@ fn emit_cast_bf16_msl(out: &mut String) {
 /// The transposed sibling below differs in exactly one term — it reads
 /// `p1[n * K + k]` because its B is [N, K]. Keeping them as two small functions
 /// rather than one with a flag makes that single difference the whole diff.
-fn emit_matmul_f32_msl(out: &mut String) {
+/// `tile.k_unroll` overrides the receipted default for ONE kernel; `None`
+/// keeps today's constant so every existing caller is unchanged.
+fn effective_k_unroll(declared: Option<u32>) -> usize {
+    match declared {
+        None => MATMUL_TRANSPOSED_K_UNROLL,
+        // 0 is rejected at schedule-validate; clamp here so a bad MLIR attr
+        // still emits a scalar loop rather than an empty unrolled body.
+        Some(0) => 1,
+        Some(f) => f as usize,
+    }
+}
+
+/// The transposed sibling reads `p1[n * K + k]` because its B is [N, K].
+fn emit_matmul_f32_msl(out: &mut String, k_unroll: Option<u32>) {
     writeln!(out, "    uint gid = row * tcount + tid;").unwrap();
     writeln!(out, "    if (gid >= M * N) return;").unwrap();
     writeln!(out, "    uint m = gid / N;").unwrap();
@@ -23662,7 +23675,13 @@ fn emit_matmul_f32_msl(out: &mut String) {
     writeln!(out, "    float acc = 0.0f;").unwrap();
     let mut k_loop = Vec::new();
     emit_unrolled_k_accumulation(
-        &mut k_loop, MATMUL_TRANSPOSED_K_UNROLL, "acc", "k", "K", "uint", "    ",
+        &mut k_loop,
+        effective_k_unroll(k_unroll),
+        "acc",
+        "k",
+        "K",
+        "uint",
+        "    ",
         |i| format!("p0[m * K + {}] * p1[({}) * N + n]", i, i),
     );
     for line in k_loop {
@@ -23671,17 +23690,23 @@ fn emit_matmul_f32_msl(out: &mut String) {
     writeln!(out, "    p2[m * N + n] = acc;").unwrap();
 }
 
-fn emit_matmul_transposed_msl(out: &mut String) {
+fn emit_matmul_transposed_msl(out: &mut String, k_unroll: Option<u32>) {
     writeln!(out, "    uint gid = row * tcount + tid;").unwrap();
     writeln!(out, "    if (gid >= M * N) return;").unwrap();
     writeln!(out, "    uint m = gid / N;").unwrap();
     writeln!(out, "    uint n = gid % N;").unwrap();
     writeln!(out, "    float acc = 0.0f;").unwrap();
-    // K-loop unroll via the declared knob (see DEFAULT_K_UNROLL). Every
-    // factor emits the same accumulation order, so this is bit-exact.
+    // K-loop unroll via tile.k_unroll or the declared knob. Every factor
+    // emits the same accumulation order, so this is bit-exact.
     let mut k_loop = Vec::new();
     emit_unrolled_k_accumulation(
-        &mut k_loop, MATMUL_TRANSPOSED_K_UNROLL, "acc", "k", "K", "uint", "    ",
+        &mut k_loop,
+        effective_k_unroll(k_unroll),
+        "acc",
+        "k",
+        "K",
+        "uint",
+        "    ",
         |i| format!("p0[m * K + {}] * p1[n * K + {}]", i, i),
     );
     for line in k_loop {
@@ -28331,9 +28356,83 @@ module {
     #[test]
     fn t_emit_matmul_transposed_msl() {
         check(
-            |o| emit_matmul_transposed_msl(o),
+            |o| emit_matmul_transposed_msl(o, None),
             "acc += p0[m * K + k + 1] * p1[n * K + k + 1];",
             "emit_matmul_transposed_msl",
+        );
+    }
+
+    /// `tile.k_unroll = 8` must change ONLY the unroll factor — same terms,
+    /// same increasing-k order, same scalar tail.
+    #[test]
+    fn t_emit_matmul_transposed_honours_declared_k_unroll() {
+        let mut o = String::new();
+        emit_matmul_transposed_msl(&mut o, Some(8));
+        assert!(
+            o.contains("k + 7 < K; k += 8"),
+            "declared k_unroll=8 not honoured:\n{o}"
+        );
+        assert!(
+            o.contains("for (; k < K; k++)"),
+            "scalar tail must remain:\n{o}"
+        );
+        assert!(
+            !o.contains("k + 15 < K; k += 16"),
+            "default factor must not leak when schedule is declared:\n{o}"
+        );
+    }
+
+    /// Absent schedule = today's receipted default (MATMUL_TRANSPOSED_K_UNROLL).
+    #[test]
+    fn t_emit_matmul_transposed_default_matches_receipted_knob() {
+        let mut o = String::new();
+        emit_matmul_transposed_msl(&mut o, None);
+        assert!(
+            o.contains(&format!(
+                "k + {} < K; k += {}",
+                MATMUL_TRANSPOSED_K_UNROLL - 1,
+                MATMUL_TRANSPOSED_K_UNROLL
+            )),
+            "default must keep the receipted factor {}:\n{o}",
+            MATMUL_TRANSPOSED_K_UNROLL
+        );
+    }
+
+    /// End-to-end: `tile.k_unroll = 8` on the MLIR function must reach the
+    /// emitter and change ONLY the unroll factor (same terms, scalar tail).
+    #[test]
+    fn test_msl_matmul_transposed_honours_tile_k_unroll_attr() {
+        let mlir = r#"
+module {
+  llvm.func @matmul_t(%arg0: !llvm.ptr<1>, %arg1: !llvm.ptr<1>, %arg2: !llvm.ptr<1>) attributes {hacc.entry, tile.k_unroll = 8 : i32} {
+    ^bb0:
+    %m = llvm.mlir.constant(4 : i32) : i32
+    %n = llvm.mlir.constant(8 : i32) : i32
+    %k = llvm.mlir.constant(16 : i32) : i32
+    %a = llvm.call @__tile_load_f32(%arg0, %m, %k) : (!llvm.ptr<1>, i32, i32) -> i32
+    %b = llvm.call @__tile_load_f32(%arg1, %n, %k) : (!llvm.ptr<1>, i32, i32) -> i32
+    %res = llvm.call @__tile_matmul_transposed_f32(%a, %b, %m, %n, %k) : (i32, i32, i32, i32, i32) -> i32
+    llvm.call @__tile_store_f32(%arg2, %res, %m, %n) : (!llvm.ptr<1>, i32, i32, i32, i32) -> ()
+    llvm.return
+  }
+}
+"#;
+        let msl = convert_mlir_to_msl(mlir).unwrap();
+        assert!(
+            msl.contains("k + 7 < K; k += 8"),
+            "declared tile.k_unroll=8 not honoured:\n{msl}"
+        );
+        assert!(
+            !msl.contains(&format!(
+                "k + {} < K; k += {}",
+                MATMUL_TRANSPOSED_K_UNROLL - 1,
+                MATMUL_TRANSPOSED_K_UNROLL
+            )),
+            "default factor must not leak when schedule is declared:\n{msl}"
+        );
+        assert!(
+            msl.contains("for (; k < K; k++) {"),
+            "scalar tail must remain:\n{msl}"
         );
     }
     #[test]

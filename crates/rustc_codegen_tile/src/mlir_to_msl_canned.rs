@@ -684,7 +684,7 @@ pub(super) fn emit_laguna_head_rms_norm_rope_neox_msl(out: &mut String) {
     // AND charges it in one call, which is D6 — the code and the claim come from
     // one call site, so they cannot drift.
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.threadgroup_array("float", "scratch", 1024, 4, None);
         let _obligations = k.finish();
     }
@@ -722,7 +722,7 @@ pub(super) fn emit_laguna_head_rms_norm_rope_neox_msl(out: &mut String) {
     // obligations in the same call that writes the loop, so they cannot drift
     // from it. Byte output is unchanged; see the byte-identity gate.
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.tree_reduce("nth", "scratch", 1024, "scratch[tid] += scratch[tid + step]");
         let _obligations = k.finish();
     }
@@ -759,7 +759,7 @@ pub(super) fn emit_laguna_head_rms_norm_rope_neox_msl(out: &mut String) {
     // having written NOTHING -- not even the RMSNorm -- so the caller consumes
     // whatever was already in the buffer. Same species as the rotary bound below.
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.charge_dim_at_most_dim(
             "n_rot",
             "head_dim",
@@ -777,7 +777,7 @@ pub(super) fn emit_laguna_head_rms_norm_rope_neox_msl(out: &mut String) {
     }
 
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.charge_dim_at_most_threads(
             "n_rot",
             2,
@@ -1237,7 +1237,7 @@ pub(super) fn emit_laguna_attn_output_residual_f32_msl(out: &mut String, nsg: u3
     // emitted, so resizing it without revisiting the contract fails codegen.
     // Emitted bytes are unchanged.
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.charge_threadgroup_bytes(256, "threadgroup float shmem[NR0 * NW];");
         let _ = k.finish();
     }
@@ -1382,7 +1382,7 @@ pub(super) fn emit_laguna_qkvg_f16_f32_msl(out: &mut String, nsg: u32, nr0: u32,
     // emitted, so resizing it without revisiting the contract fails codegen.
     // Emitted bytes are unchanged.
     {
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.charge_threadgroup_bytes(256, "threadgroup float shmem[NR0 * NW];");
         let _ = k.finish();
     }
@@ -1635,7 +1635,7 @@ pub(super) fn emit_laguna_attention_decode_gqa_f16_msl(out: &mut String, split: 
                  indexed by the simdgroup index; one more simdgroup overwrites partial_sum",
             )
         };
-        let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+        let mut k = super::kernel_writer::KernelWriter::new(out);
         k.charge_threadgroup_bytes(4 * (2 * split + split * 128), &decl);
         k.charge_dim_bound("head_dim", 128, "partial_value", &decl, head_dim_because);
         k.charge_dim_bound(
@@ -9565,7 +9565,7 @@ pub(super) fn emit_mul_mv_iq2_xxs_f32_ggml(out: &mut String) {
     writeln!(out, "}}").unwrap();
     // Emitted bytes are unchanged: this only records what the staging above
     // requires of the launch, which nothing else writes down.
-    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    let mut k = super::kernel_writer::KernelWriter::new(out);
     k.charge_simdgroups_exactly(
         "iq2xxs_grid[256] and ksigns_iq2xs[128]",
         256,
@@ -9733,7 +9733,7 @@ pub(super) fn emit_mul_mv_iq2_xs_f32_ggml(out: &mut String) {
     writeln!(out, "}}").unwrap();
     // Emitted bytes are unchanged: this only records what the staging above
     // requires of the launch, which nothing else writes down.
-    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    let mut k = super::kernel_writer::KernelWriter::new(out);
     k.charge_simdgroups_exactly(
         "iq2xs_grid[512] and ksigns_iq2xs[128]",
         512,
@@ -10029,7 +10029,7 @@ pub(super) fn emit_mul_mv_iq3_xxs_f32_ggml(out: &mut String) {
     writeln!(out, "}}").unwrap();
     // Emitted bytes are unchanged: this only records what the staging above
     // requires of the launch, which nothing else writes down.
-    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    let mut k = super::kernel_writer::KernelWriter::new(out);
     k.charge_simdgroups_exactly(
         "iq3xxs_grid[256] and ksigns_iq2xs[128]",
         256,
@@ -10174,7 +10174,7 @@ pub(super) fn emit_mul_mv_iq3_s_f32_ggml(out: &mut String) {
     writeln!(out, "}}").unwrap();
     // Emitted bytes are unchanged: this only records what the staging above
     // requires of the launch, which nothing else writes down.
-    let mut k = crate::mlir_to_msl::kernel_writer::KernelWriter::new(out);
+    let mut k = super::kernel_writer::KernelWriter::new(out);
     k.charge_simdgroups_exactly(
         "iq3s_grid[512]",
         512,

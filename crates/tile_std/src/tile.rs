@@ -237,23 +237,49 @@ extern "C" {
         head_dim: u32,
     ) -> u32;
 
-    /// Causal fused attention: softmax(mask(Q @ K^T / sqrt(d))) @ V, where
-    /// `mask` sets every entry above the diagonal to -inf.
-    /// Q: (S × D), K: (S × D), V: (S × D) → out: (S × D)
+    /// Fused grouped-query attention: `softmax(Q @ Kᵀ / sqrt(d)) @ V` with
+    /// `heads_q` query heads sharing `heads_kv` key/value heads.
     ///
-    /// Distinct from `__tile_attention_f32` + an explicit mask op because
-    /// causality is a **compile-time** property here: a backend may skip the
-    /// above-diagonal work entirely rather than computing and discarding it.
-    /// The elision is exact — a masked entry contributes `exp(-inf) == +0.0`
-    /// to both the softmax denominator and the V accumulation, and never
-    /// wins the row maximum (row `r` always retains the finite entry `r`).
+    /// Q: (heads_q × seq × head_dim), K/V: (heads_kv × seq × head_dim)
+    /// → out: (heads_q × seq × head_dim).
     ///
-    /// A separate intrinsic name rather than a flag argument: a backend that
-    /// does not implement causality fails to lower this call instead of
-    /// silently computing full attention, which would be numerically wrong.
-    pub fn __tile_attention_causal_f32(
-        dst: u32, q: u32, k: u32, v: u32,
-        seq_len: u32, head_dim: u32,
+    /// ⚠ THIS DECLARATION SETTLES A DISAGREEMENT. The symbol had no
+    /// declaration and the backends had drifted apart on what the trailing
+    /// operands mean:
+    ///
+    ///   mlir_to_cpp / mlir_to_gpu / mlir_to_aie   heads_q, heads_kv, seq, head_dim
+    ///   mlir_to_nki                               heads, head_dim, seq, kv_heads
+    ///
+    /// so one MLIR module lowered through `mlir_to_cpp` and through
+    /// `mlir_to_nki` computed different attention shapes, and one of them was
+    /// silently wrong. Each fixture had been written to match its own emitter,
+    /// which is exactly what having no declared contract permits.
+    ///
+    /// The order below is the one three backends already implement. NKI is
+    /// therefore the divergent reader, and NKI support for this operator is
+    /// POSTPONED by decision rather than fixed here — see the note on the
+    /// `mlir_to_nki` arm.
+    pub fn __tile_attention_gqa_f32(
+        dst: u32,
+        q: u32,
+        k: u32,
+        v: u32,
+        heads_q: u32,
+        heads_kv: u32,
+        seq_len: u32,
+        head_dim: u32,
+    ) -> u32;
+
+    /// f16 grouped-query attention. Same operand order as the f32 form.
+    pub fn __tile_attention_gqa_f16(
+        dst: u32,
+        q: u32,
+        k: u32,
+        v: u32,
+        heads_q: u32,
+        heads_kv: u32,
+        seq_len: u32,
+        head_dim: u32,
     ) -> u32;
 
     // ── Transformer building-block intrinsics ───────────────────────
@@ -354,8 +380,6 @@ extern "C" {
         has_sinks: u32,
         has_bias: u32,
         has_softcap: u32,
-        dk: u32,
-        dv: u32,
     ) -> u32;
 
     /// DS4 kernel_flash_attn_ext_vec_f16_dk512_dv512 (M124) — decode-shape sibling of M123.
@@ -403,8 +427,106 @@ extern "C" {
         has_sinks: u32,
         has_bias: u32,
         has_softcap: u32,
-        dk: u32,
-        dv: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_indexer_pack: convert queries and keys to bfloat, and record per
+    /// group whether EVERY element round-tripped exactly. That flag lets a later kernel take the
+    /// packed bf16 path only where it is lossless, and the f32 path otherwise.
+    /// p0=q, p1=keys; p2=flags, p3=packed_q, p4=packed_keys (all three written).
+    pub fn __tile_dsv41_indexer_pack(
+        q: u32, keys: u32, flags: u32, packed_q: u32, packed_keys: u32,
+        key_count: u32, query_count: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_deepseek41_vision_bias_residual: add a bf16 bias and a residual to a
+    /// projection, rounding to bf16 at BOTH steps. p0=x (written), p1=bias (bf16 halves),
+    /// p2=residual.
+    pub fn __tile_dsv41_vision_bias_residual(
+        x: u32, bias: u32, residual: u32, width: u32, rows: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_deepseek41_vision_swiglu_split: SwiGLU over a [gate|up] row pair.
+    /// The 4.1 variant rounds the SiLU result to bf16 BEFORE multiplying, which the V4 one
+    /// does not — that difference is the whole reason it is a separate kernel.
+    /// p0=gate_up, p1=out (written).
+    pub fn __tile_dsv41_vision_swiglu_split(gate_up: u32, out: u32, width: u32, rows: u32) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_bf16_linear: round a whole buffer to bf16 in place,
+    /// round-to-nearest-even, leaving non-finite values untouched. p0 is written.
+    pub fn __tile_dsv41_bf16_linear(x: u32, count: u32) -> u32;
+
+    /// DS4 V4.1 kernel_moe_packed_offsets: exclusive prefix sum of per-expert row counts.
+    /// p0=counts, p1=offsets (written). Serial by design — one thread walks the list.
+    pub fn __tile_dsv41_moe_packed_offsets(counts: u32, offsets: u32, experts: u32) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_pool2: softmax-weighted pooling of adjacent KV pairs, bf16-rounded.
+    /// p0=out (written), p1=kv, p2=scores, p3=previous_kv, p4=previous_scores.
+    /// A negative left index reads the previous chunk's tail rather than the current buffers.
+    pub fn __tile_dsv41_pool2(
+        out: u32, kv: u32, scores: u32, previous_kv: u32, previous_scores: u32,
+        width: u32, pairs: u32, tail: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_candidate_blocks (dsv41.metal): per 8-column block, the maximum
+    /// score within the row's causal frontier `min(width, (start + y + 1) / ratio)`. The block
+    /// containing the frontier is forced to +INFINITY so it always survives selection.
+    /// p0=scores, p1=blocks (written), p2=unused (kept for ABI parity).
+    pub fn __tile_dsv41_candidate_blocks(
+        scores: u32,
+        blocks: u32,
+        unused: u32,
+        width: u32,
+        rows: u32,
+        start: u32,
+        ratio: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_candidate_filter (dsv41.metal): keep a score where its column is
+    /// within the causal frontier and its block's mask is 0.0, else -INFINITY.
+    /// p0=scores, p1=out (written), p2=block_mask.
+    pub fn __tile_dsv41_candidate_filter(
+        scores: u32,
+        out: u32,
+        block_mask: u32,
+        width: u32,
+        rows: u32,
+        start: u32,
+        ratio: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_engram_add (dsv41.metal): the engram contribution.
+    ///
+    /// For each (token, sub-row) this takes an RMS-normalised, q/k-weighted dot between the
+    /// residual and a bf16-rounded key, turns it into a sign-preserving sqrt-magnitude sigmoid
+    /// gate, and adds `gate * bf16(value)` back into the residual, itself bf16-rounded.
+    /// p0=residual (written in place), p1=kv, p2=q_weight, p3=k_weight, p4=mask.
+    /// Dispatch is 1D over (tokens * 4) threadgroups of 32 threads — one simdgroup each.
+    pub fn __tile_dsv41_engram_add(
+        residual: u32,
+        kv: u32,
+        q_weight: u32,
+        k_weight: u32,
+        mask: u32,
+        width: u32,
+        eps: f32,
+        masked: u32,
+    ) -> u32;
+
+    /// DS4 V4.1 kernel_dsv41_carry_copy (dsv41.metal): carry between a packed representation
+    /// and a plain f32 one, in either direction.
+    ///
+    /// `format` 0 is a bf16 carry — packing keeps the top 16 bits of each f32, unpacking shifts
+    /// them back. `format` 1 is a 32-bit allowed-mask — packing sets one bit per column whose
+    /// plain value is exactly 0.0, unpacking writes 0.0 for a set bit and -INFINITY otherwise.
+    /// `pack` selects the direction. p0=packed, p1=plain; both are written, depending on `pack`.
+    /// Dispatch is 1D over (rows x ceil(width/128)) threadgroups of 128 threads.
+    pub fn __tile_dsv41_carry_copy(
+        packed: u32,
+        plain: u32,
+        width: u32,
+        words: u32,
+        format: u32,
+        pack: u32,
     ) -> u32;
 
     /// DS4 KV ratio-4 recurrent-state shift: state[i] = state[4*width + i] for two state buffers.
@@ -514,17 +636,7 @@ extern "C" {
     /// DS4 sort_i32_rows_asc: bitonic sort each row of an int32 (num_rows × top_k) buffer ascending.
     /// p0=src (int*), p1=dst (int*). One threadgroup per row, top_k threads per group.
     /// top_k must be a power of two ≤ 256.
-    ///
-    /// `max_top_k` is the per-row staging: a compile-time power of two up to 1024,
-    /// at least the runtime `top_k`. Dispatch one threadgroup of `top_k` threads
-    /// per row. DeepSeek-V4 uses 256.
-    pub fn __tile_sort_i32_rows_asc_i32(
-        src: u32,
-        dst: u32,
-        top_k: u32,
-        num_rows: u32,
-        max_top_k: u32,
-    ) -> u32;
+    pub fn __tile_sort_i32_rows_asc_i32(src: u32, dst: u32, top_k: u32, num_rows: u32) -> u32;
 
     /// DS4 softmax_pool: per (id, ic) reduce dst[ic,id] = Σ_ir softmax(score[ir,id,ic]) * kv[ir,id,ic].
     /// p0=kv (R*ne1*ne0), p1=score (R*ne1*ne0), p2=dst (ne1*ne0). Dispatch one thread per (id, ic).
@@ -554,25 +666,18 @@ extern "C" {
     /// DS4 kv_fp8_store: per-row n_nope chunked-64 fp8 round-trip + n_rot tail half-cast.
     /// p0=kv (head_dim, in/out), p1=raw_cache (raw_row*head_dim base offset, write).
     /// Single threadgroup of 64 threads, no batching: one row per dispatch.
-    ///
-    /// `block` elements share one FP8 scale. It must be a compile-time power of
-    /// two up to 1024; dispatch one threadgroup of `block` threads. DeepSeek-V4 uses 64.
     pub fn __tile_kv_fp8_store_f32(
         kv: u32,
         raw_cache: u32,
         head_dim: u32,
         n_rot: u32,
         raw_row: u32,
-        block: u32,
     ) -> u32;
 
     /// DS4 fp8_kv_quantize: 4D batched n_nope chunked-64 fp8 round-trip.
     /// p0=src0 (read), p1=dst (write). Element-stride params nb01_e/nb02_e/nb03_e
     /// for src, nb1_e/nb2_e/nb3_e for dst (driver pre-divides byte strides by 4).
     /// Dispatches (n_rows = ne01*ne02*ne03) threadgroups of 64 threads each.
-    ///
-    /// `block` elements share one FP8 scale. It must be a compile-time power of
-    /// two up to 1024; dispatch `block` threads per threadgroup. DeepSeek-V4 uses 64.
     pub fn __tile_fp8_kv_quantize_f32(
         src: u32,
         dst: u32,
@@ -587,7 +692,6 @@ extern "C" {
         nb2_e: u32,
         nb3_e: u32,
         n_rot: u32,
-        block: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_pad: byte-stride DMA padding of K/V/mask into a single dst buffer.
@@ -633,13 +737,8 @@ extern "C" {
         c_ncpsg: u32,
     ) -> u32;
 
-    /// DS4 indexer scoring for one token: per compressed key, the sum over heads
-    /// of relu(q . k) * weight * scale. Buffers: q, weights, index_comp, scores.
-    ///
-    /// `n_head` must be a compile-time constant and a multiple of 4. The head
-    /// dimension is fixed at 128 by the kernel's layout (one float4 per lane of
-    /// a 32-lane simdgroup). Dispatch (n_comp, 1, 1) threadgroups of 128 threads.
-    /// DeepSeek-V4 uses 64 heads.
+    /// DS4 dsv4_indexer_score_one_direct: per-row fused 64-head scoring.
+    /// Buffers: q, weights, index_comp, scores.
     pub fn __tile_indexer_score_one_direct_f32(
         q: u32,
         weights: u32,
@@ -649,16 +748,11 @@ extern "C" {
         q_head_stride: u32,
         index_row_stride: u32,
         scale: u32,
-        n_head: u32,
     ) -> u32;
 
     /// DS4 dsv4_router_finalize_one: 256-thread bitonic top-6 over (probs+bias).
     /// Buffers: probs(float, 256), bias(float, 256), hash(int*), tokens(int*), selected(int, 6 out).
     /// hash_mode short-circuits to copying hash[token*6..+6] into selected.
-    ///
-    /// `n_expert` (a power of two up to 1024) and `top_k` must be compile-time
-    /// constants; dispatch one threadgroup of `n_expert` threads. The hash table
-    /// has `top_k` columns. DeepSeek-V4 uses 256 experts, top 6.
     pub fn __tile_router_finalize_one_f32(
         probs: u32,
         bias: u32,
@@ -670,18 +764,10 @@ extern "C" {
         use_token_buffer: u32,
         token: u32,
         hash_rows: u32,
-        n_expert: u32,
-        top_k: u32,
     ) -> u32;
 
-    /// DS4 indexer scoring: per token and compressed key, the sum over heads of
-    /// relu(q . k) * weight * scale, with keys past the causal ratio window at -inf.
+    /// DS4 dsv4_indexer_scores_tiled_f32: 8x32 tile fused indexer scoring with simdgroup matmul.
     /// Buffers: q, weights, index_comp, scores (all char*).
-    ///
-    /// `head_dim` and `tile_cols` must be compile-time constants: they size the
-    /// kernel's tiles. `head_dim` and `tile_cols` are multiples of 8, and the
-    /// kernel is dispatched with `tile_cols * 4` threads per threadgroup over a
-    /// (ceil(n_comp / tile_cols), ceil(n_tokens / 8)) grid. DeepSeek-V4 uses 128 and 32.
     pub fn __tile_indexer_scores_tiled_f32(
         q: u32,
         weights: u32,
@@ -698,20 +784,11 @@ extern "C" {
         index_row_stride: u32,
         score_token_stride: u32,
         scale: u32,
-        head_dim: u32,
-        tile_cols: u32,
     ) -> u32;
 
     /// DS4 dsv4_indexed_mixed_attention_heads8: ratio-4 mixed attention,
     /// 1 token × 8 heads per threadgroup, online softmax with half K dot/accum.
     /// Buffers: q, raw_kv, comp_kv, topk, sinks, dst (all char*).
-    ///
-    /// Compile-time shape operands: `head_dim` (128, 256, 512 or 1024),
-    /// `heads_per_group` (1 to 32; dispatch (n_tokens, ceil(n_head / heads_per_group))
-    /// threadgroups of 32 x heads_per_group threads) and `stage_bits` (16 stages
-    /// Q and K as half, 32 as float). DeepSeek-V4 uses 512, 8 and 16. The runtime
-    /// `n_head` must be a multiple of `heads_per_group`, or heads in the last
-    /// threadgroup read key rows that were never staged.
     pub fn __tile_indexed_mixed_attention_h8_f32(
         q: u32,
         raw_kv: u32,
@@ -737,9 +814,6 @@ extern "C" {
         dst_token_stride: u32,
         dst_head_stride: u32,
         scale: u32,
-        head_dim: u32,
-        heads_per_group: u32,
-        stage_bits: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec_reduce: split-K decode reducer that merges NWG
@@ -769,8 +843,6 @@ extern "C" {
         dv: u32,
         ne01: u32,
         nb01: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36b: setup + K·Q dot + online softmax merge.
@@ -792,8 +864,6 @@ extern "C" {
         nb01: u32,
         nb11: u32,
         scale: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36c: full single-SG flash-attention output.
@@ -817,8 +887,6 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext_vec stage M36d: M36c + has_mask + has_sinks paths baked in.
@@ -840,8 +908,6 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37a: setup + Q load echo.
@@ -861,7 +927,6 @@ extern "C" {
         dv: u32,
         ne01: u32,
         nb01: u32,
-        dk_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37b: M37a + K·Q simdgroup
@@ -883,7 +948,6 @@ extern "C" {
         nb01: u32,
         nb11: u32,
         scale: u32,
-        dk_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37c: M37b + V matmul +
@@ -906,8 +970,6 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 flash_attn_ext (non-vec, prefill) stage M37d: M37c + has_mask FMA
@@ -930,8 +992,6 @@ extern "C" {
         nb11: u32,
         nb21: u32,
         scale: u32,
-        dk_staged: u32,
-        dv_staged: u32,
     ) -> u32;
 
     /// DS4 dsv4_hc_expand: per-(d, dst_hc, t) HC expand step. Computes
@@ -968,11 +1028,6 @@ extern "C" {
 
     /// DS4 dsv4_hc_expand4: HC=4 specialization. Same args layout as expand;
     /// one thread writes all 4 dst_hc streams. Total = n_embd × n_tokens.
-    ///
-    /// `hc_unroll` is the hyper-connection count the kernel is unrolled for: it
-    /// preloads that many residuals and expands the combine over them, so it must
-    /// be a compile-time constant from 1 to 16 and must equal the runtime `n_hc`,
-    /// which the kernel checks. The 4 in this intrinsic's name is the default.
     pub fn __tile_dsv4_hc_expand4_f32(
         block_out: u32,
         residual: u32,
@@ -999,7 +1054,6 @@ extern "C" {
         nb1: u32,
         nb2: u32,
         has_add: u32,
-        hc_unroll: u32,
     ) -> u32;
 
     /// DS4 dsv4_hc_weighted_sum: per-(d, t) reduce
@@ -1095,10 +1149,6 @@ extern "C" {
     /// DS4 argsort_f32_i32_desc: bitonic sort one float row → int32 index
     /// permutation, descending. One threadgroup per row. Threadgroup size
     /// must be a power of two ≥ ne00. Buffers: src (float row), dst (int).
-    ///
-    /// `max_row` is the index staging: a compile-time power of two up to 1024, at
-    /// least the threadgroup's thread count (one thread per column). DeepSeek-V4
-    /// uses 1024.
     pub fn __tile_argsort_f32_i32_desc(
         src: u32,
         dst: u32,
@@ -1107,7 +1157,6 @@ extern "C" {
         top_k: u32,
         ne0: u32,
         nb01: u32,
-        max_row: u32,
     ) -> u32;
 
     /// DS4 argsort_merge_f32_i32_desc: merge two pre-sorted descending int32
@@ -1130,10 +1179,6 @@ extern "C" {
     /// batched surface from antirez. Dispatched as (ib*ne01, ne02, ne03)
     /// threadgroups; ntg.x threads per group must be a power of two and large
     /// enough to cover ne00 (or step ne00 in ntg.x-sized blocks when ib > 0).
-    ///
-    /// `max_row` is the index staging: a compile-time power of two up to 1024, at
-    /// least the threadgroup's thread count (one thread per column). DeepSeek-V4
-    /// uses 1024.
     pub fn __tile_argsort_f32_i32_desc_full(
         src0: u32,
         dst: u32,
@@ -1150,7 +1195,6 @@ extern "C" {
         ne2: u32,
         ne3: u32,
         top_k: u32,
-        max_row: u32,
     ) -> u32;
 
     /// DS4 kernel_argsort_merge_f32_i32_desc M135 full host_name (argsort.metal:266):
@@ -1229,33 +1273,6 @@ extern "C" {
         ne20: u32,
         ne21: u32,
         nb21: u32,
-    ) -> u32;
-
-    /// DS4 per-expert MoE ID map with the host_name surface of antirez
-    /// kernel_mul_mm_id_map0_ne20_N. For each expert (one thread each), lists the
-    /// flat slot `row * ne20 + i` of every token row that selected it, and counts
-    /// them. 3 char* bufs: src2 (const, ne21 rows of ne20 int32 ids), htpe
-    /// (writable, uint per expert), hids (writable, ne21 ints per expert).
-    ///
-    /// `ne20` must be a compile-time constant: it sizes the staging. Optional
-    /// trailing `max_experts` (default 256) is the thread count per group, one per
-    /// expert; `2 * max_experts * ne20` must fit Metal's 32768 bytes of threadgroup
-    /// memory. Dispatch one threadgroup of `max_experts` threads. The
-    /// `__tile_mul_mm_id_map0_ne20_<N>_full` intrinsics below are this one with
-    /// `ne20` fixed by name.
-    pub fn __tile_mul_mm_id_map0_full(
-        src2: u32,
-        htpe: u32,
-        hids: u32,
-        ne02: u32,
-        ne10: u32,
-        ne11: u32,
-        nb11: u32,
-        nb12: u32,
-        ne21: u32,
-        ne20: u32,
-        nb21: u32,
-        max_experts: u32,
     ) -> u32;
 
     /// DS4 kernel_mul_mm_id_map0_ne20_8 M136 (moe.metal:1510): full host_name
@@ -2356,23 +2373,6 @@ extern "C" {
         nb13: u32,
     ) -> u32;
 
-    /// DS4 kernel_mul_mv_q4_K_f32 M91k: DENSE (non-id) quantized Q4_K × float
-    /// matvec. src0 is laid out as block_q4_K { half d; half dmin;
-    /// uchar scales[12]; uchar qs[128]; } (144 B per block of QK_K=256 elements).
-    /// ne00 must be a multiple of QK_K=256. Output is float. Baked NSG=2,
-    /// NR0=N_R0_Q4_K=2. Block decode is byte-identical to the MoE-routed
-    /// __tile_mul_mv_id_q4_K_f32 (M112) inner (sc16 kmask1/2/3 unpack,
-    /// dh[0]*(acc*sc8) - dh[1]*(sumy*sc8)); only the id/expert routing is
-    /// removed — standard dense weight offset and single-stage simd_sum finalize.
-    /// Same 13-uint dense param shape as __tile_mul_mv_q8_0_f32.
-    pub fn __tile_mul_mv_q4_K_f32(
-        src0: u32, src1: u32, dst: u32,
-        ne00: u32, ne01: u32, ne0: u32, ne1: u32,
-        ne12: u32, r2: u32, r3: u32,
-        nb01: u32, nb02: u32, nb03: u32,
-        nb11: u32, nb12: u32, nb13: u32,
-    ) -> u32;
-
     /// DS4 kernel_mul_mv_id_q8_0_f32 M92: MoE-routed Q8_0 matvec.
     /// Per (idx, iid1) the routed expert i02 is read from ids; src0s is
     /// offset by i02*nb02 and the M91 inner q8_0 dot runs. Grid is
@@ -2615,18 +2615,6 @@ extern "C" {
         nb11: u32,
         nb12: u32,
         nb1: u32,
-    ) -> u32;
-
-    /// DS4 kernel_glm_q6_K_down_f32 M134 (moe.metal:2239). q6_K down-projection
-    /// sibling of the sum6 family. Same 4-buf (src0s/down, src1/mid, dst/out,
-    /// ids/selected) + 8-uniform shell + fixed 6-slot expert-combine routing.
-    /// Inner q6_K decode: NSG=2, NR0=N_R0_Q6_K=2, QK_K=256, block_q6_K=210B
-    /// with `half d` LAST (uchar ql[128] + uchar qh[64] + char scales[16] + half d).
-    /// Weight q = low-nibble | (2-bit-high << shift); val = d·sc·(q−32).
-    pub fn __tile_mul_mv_id_q6_K_down_f32(
-        src0s: u32, src1: u32, dst: u32, ids: u32,
-        ne00: u32, ne0: u32, nbi1: u32,
-        nb01: u32, nb02: u32, nb11: u32, nb12: u32, nb1: u32,
     ) -> u32;
 
     /// DS4 kernel_dsv4_attn_out_low_q8_0_f32 M93: stripped-down M92 with id=group.
@@ -3409,17 +3397,6 @@ extern "C" {
 
     /// DS4 dsv4_indexed_mixed_attention_heads8_rb4: decode specialization of the h8
     /// kernel that stages 4 raw/comp KV rows at once and consumes them sequentially.
-    ///
-    /// Compile-time shape operands: `head_dim` (128, 256, 512 or 1024),
-    /// `heads_per_group` (1 to 32; dispatch (n_tokens, ceil(n_head / heads_per_group))
-    /// threadgroups of 32 x heads_per_group threads) and `stage_bits` (16 stages
-    /// Q and K as half, 32 as float). DeepSeek-V4 uses 512, 8 and 16. The runtime
-    /// `n_head` must be a multiple of `heads_per_group`, or heads in the last
-    /// threadgroup read key rows that were never staged.
-    /// `rows_per_batch` (1 to 16) key rows are staged per barrier; DeepSeek-V4 uses 4.
-    /// Staged rows use `16 * rows_per_batch * head_dim / 4` bytes of threadgroup
-    /// memory, and Metal lowers the pipeline's thread ceiling as that grows, so
-    /// check `maxTotalThreadsPerThreadgroup` before dispatching many heads per group.
     pub fn __tile_indexed_mixed_attention_h8_rb4_f32(
         q: u32,
         raw_kv: u32,
@@ -3445,10 +3422,6 @@ extern "C" {
         dst_token_stride: u32,
         dst_head_stride: u32,
         scale: u32,
-        head_dim: u32,
-        heads_per_group: u32,
-        stage_bits: u32,
-        rows_per_batch: u32,
     ) -> u32;
 
     /// DS4 dsv4_indexer_scores_tiled (bf16/half K variant of the f32 tiled scorer).
@@ -3470,8 +3443,6 @@ extern "C" {
         index_row_stride: u32,
         score_token_stride: u32,
         scale: u32,
-        head_dim: u32,
-        tile_cols: u32,
     ) -> u32;
 
     /// Causal mask: fills upper-triangular portion of (S, S) tile with -inf.
@@ -3515,6 +3486,267 @@ extern "C" {
 
     /// Transpose (ROWS × COLS) → (COLS × ROWS).
     pub fn __tile_transpose_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+
+    // Operators `mlir_to_msl` reaches by kernel-type classification. Their arms
+    // set `ctx.kernel_type` and never read the call's operands, so the arity here
+    // comes from the emitter's own fixtures rather than from a banner or an arity
+    // guard — weaker evidence than the arms above, and recorded as such. Note the
+    // shapes genuinely differ: layernorm, l2dist and scatter_add carry NO leading
+    // `dst`, where `where` does, which is why each was read individually instead
+    // of being given a house convention.
+
+    /// Layer normalisation over each row, with per-column scale and shift.
+    pub fn __tile_layernorm_f32(src: u32, gamma: u32, beta: u32, rows: u32, cols: u32) -> u32;
+    /// f16 twin; shares the f32 arm, so the operand order is identical.
+    pub fn __tile_layernorm_f16(src: u32, gamma: u32, beta: u32, rows: u32, cols: u32) -> u32;
+
+    /// Row-wise L2 distance between two tiles.
+    pub fn __tile_l2dist_f32(a: u32, b: u32, rows: u32, cols: u32) -> u32;
+
+    // The partition family, all lowered by `mlir_to_pto`. Creation registers a GM
+    // buffer and its extent; a cell then resolves one (i, j) of a Tr x Tc grid to
+    // an offset view. Signatures come from the translators: creation reads
+    // args[0] as a GM pointer through `resolve_ptr`/`resolve_gm_name` and
+    // args[1..=2] as the extent, and the cell forms are documented as
+    // `(src, i, j, tr, tc)` in the emitter and used at that arity by its fixtures.
+
+    // More of the `mlir_to_pto` surface. Whether an operand is a GM pointer or a
+    // tile handle is not a style choice here and was not guessed: a translator
+    // that takes the enclosing `func` resolves its operands through
+    // `resolve_ptr`/`resolve_gm_name` and is therefore working on pointers, and
+    // one that does not is working on tile handles. That split is what decides
+    // every signature below.
+
+    /// Bitwise ops against an immediate, on i8 tiles. Shared translator, so the
+    /// three differ only in the PTO op they select.
+    pub fn __tile_ands_i8(dst: u32, src: u32, imm: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_shls_i8(dst: u32, src: u32, imm: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_shrs_i8(dst: u32, src: u32, imm: u32, rows: u32, cols: u32) -> u32;
+
+    /// dtype conversion between tiles. The name reads source-then-destination:
+    /// the arm passes ("f16", "f32") for `cvt_f16_f32`, so that one widens.
+    pub fn __tile_cvt_f16_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_cvt_f32_f16(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_cvt_f16_si8(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+
+    /// Scale a tile by the ratio `num / den`, kept as two operands so the
+    /// division happens once at emission rather than per element.
+    pub fn __tile_muls_ratio_f32(dst: u32, src: u32, num: u32, den: u32, rows: u32, cols: u32) -> u32;
+
+    /// i32 store. Same translator as the f16 and f32 stores, so it takes the GM
+    /// destination first and returns nothing.
+    pub fn __tile_store_i32(gm: *mut i32, buf: u32, rows: u32, cols: u32);
+
+    /// Expand e8m0 block exponents into f32 scales.
+    pub fn __tile_mxfp4_e8m0_to_f32(scales: *const u8, dst: *mut f32, n: u32) -> u32;
+
+    /// Unpack MXFP4 weights into f16, taking the block scales alongside. The
+    /// `_e8m0` form reads the exponent encoding rather than a scale table.
+    pub fn __tile_mxfp4_unpack_f16(w: *const u8, d: *const u8, o: *mut u16, ne00: u32, ne0: u32) -> u32;
+    pub fn __tile_mxfp4_unpack_f16_e8m0(w: *const u8, d: *const u8, o: *mut u16, ne00: u32, ne0: u32) -> u32;
+
+    /// Routed matvec over MXFP4 experts. Note this is NOT the operand order of
+    /// the `_pk` form below: this translator binds args[2] as the expert `ids`,
+    /// where the packed one binds a scale pointer there. Reading one and copying
+    /// it to the other would have put the ids where the scales go.
+    pub fn __tile_mul_mv_id_mxfp4_f32(
+        src0s: *const u8,
+        src1: *const f32,
+        ids: *const u8,
+        dst: *mut f32,
+        ne00: u32,
+        ne0: u32,
+    ) -> u32;
+
+    /// The packed MXFP4 form: weights, activations, scales, output.
+    pub fn __tile_mul_mv_id_mxfp4_pk_f32(
+        w: *const u8,
+        x: *const f32,
+        d: *const f32,
+        o: *mut f32,
+        ne00: u32,
+        ne0: u32,
+    ) -> u32;
+
+    /// Decode one MXFP4 codebook entry to f32, over a tile.
+    pub fn __tile_mxfp4_value_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+
+    /// Grouped matmul with a fused SwiGLU and an int8-quantised output.
+    ///
+    /// `w_cat` and `s_cat` are the gate and up weights (and their scales)
+    /// pre-concatenated host-side — gate in columns `0..n`, up in `n..2n` — which
+    /// is what collapses a three-launch chain into one. Emits the absmax,
+    /// quantise and store of an m x n int8 result alongside its f32 scales.
+    pub fn __tile_grouped_matmul_swiglu_quant(
+        x: *const f32,
+        w_cat: *const i8,
+        s_cat: *const f32,
+        out: *mut i8,
+        scale_out: *mut f32,
+        m: u32,
+        k: u32,
+        n: u32,
+    ) -> u32;
+
+    /// Blocked q8_0 routed matvec.
+    pub fn __tile_mul_mv_id_q8_0_blk_f32(
+        w: *const i8,
+        x: *const f32,
+        d: *const f32,
+        o: *mut f32,
+        ne00: u32,
+        ne0: u32,
+    ) -> u32;
+
+    /// RoPE applied to the two halves of each row, with cos and sin supplied as
+    /// tables rather than recomputed.
+    pub fn __tile_rope_halves_f32(
+        x: *const f32,
+        cos: *const f32,
+        sin: *const f32,
+        out: *mut f32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    // Row-wise fused blocks in `mlir_to_pto`. Every operand below is a GM
+    // pointer, not a tile handle — the translators resolve them as `*_gm` names.
+    //
+    // ⚠ Each of these arms reads ONE MORE operand than is declared here: a
+    // trailing barrier count, taken through `args.get(n).map(..)` so it is
+    // optional. An `extern "C"` signature has a single arity and cannot express
+    // an optional tail, so what is declared is the base form the emitter's own
+    // fixtures use. A kernel needing the barrier operand cannot be written in
+    // tile-rs today; that is a property of the operator contract, not of these
+    // declarations, and it is the reason this family stayed undeclared.
+
+    /// Fused residual add + RMSNorm: `s = x + residual` written back as the new
+    /// residual, and `out = s / rms(s) * weight`.
+    pub fn __tile_add_rms_norm_rows_f32(
+        x: *const f32,
+        residual: *const f32,
+        weight: *const f32,
+        out: *mut f32,
+        residual_out: *mut f32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+    pub fn __tile_add_rms_norm_rows_f16(
+        x: *const u16,
+        residual: *const u16,
+        weight: *const u16,
+        out: *mut u16,
+        residual_out: *mut u16,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+    pub fn __tile_add_rms_norm_rows_bf16(
+        x: *const u16,
+        residual: *const u16,
+        weight: *const u16,
+        out: *mut u16,
+        residual_out: *mut u16,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// RMSNorm over rows, without the residual add.
+    pub fn __tile_rms_norm_rows_f32(
+        x: *const f32,
+        weight: *const f32,
+        out: *mut f32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// SwiGLU over gate/up rows with an int8 quantised output and its scales.
+    pub fn __tile_swiglu_quant_rows(
+        gate: *const f32,
+        up: *const f32,
+        y_out: *mut i8,
+        scale_out: *mut f32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// Carve a GM buffer into a partition that cells are then read from.
+    pub fn __tile_partition_f32(gm: *const f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_partition_f16(gm: *const u16, rows: u32, cols: u32) -> u32;
+
+    /// The axis-swapped partition: a cell of it reads the transposed footprint.
+    pub fn __tile_partition_perm_f32(gm: *const f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_partition_perm_f16(gm: *const u16, rows: u32, cols: u32) -> u32;
+
+    /// Read cell (i, j) of a Tr x Tc partition as a tile.
+    pub fn __tile_partition_cell_f32(src: u32, i: u32, j: u32, tr: u32, tc: u32) -> u32;
+    pub fn __tile_partition_cell_f16(src: u32, i: u32, j: u32, tr: u32, tc: u32) -> u32;
+
+    /// Write a tile INTO cell (i, j) — the inverse of the read above, and a
+    /// store destination rather than a load source. Distinct cells do not alias,
+    /// which is what lets several of these run without a runtime check.
+    pub fn __tile_partition_cell_mut_f32(src: u32, i: u32, j: u32, tr: u32, tc: u32) -> u32;
+    pub fn __tile_partition_cell_mut_f16(src: u32, i: u32, j: u32, tr: u32, tc: u32) -> u32;
+
+    /// Scatter-add `src` into the rows named by `idx`.
+    pub fn __tile_scatter_add_f32(src: u32, idx: u32, rows: u32, cols: u32) -> u32;
+
+    /// Element-wise select: `cond ? a : b`.
+    pub fn __tile_where_f32(dst: u32, cond: u32, a: u32, b: u32, rows: u32, cols: u32) -> u32;
+
+    /// Routed-MoE sum over six MXFP4 experts. Buffer roles are the emitter's own
+    /// — `src0s, src1, dst, ids` — and the eight extents come from the call it
+    /// emits, all `i32` there.
+    pub fn __tile_mul_mv_id_mxfp4_sum6_f32(
+        src0s: *const u8,
+        src1: *const u8,
+        dst: *mut f32,
+        ids: *const u8,
+        ne00: u32,
+        ne0: u32,
+        nbi1: u32,
+        nb01: u32,
+        nb02: u32,
+        nb11: u32,
+        nb12: u32,
+        nb1: u32,
+    ) -> u32;
+
+    /// Routed-MoE paired gate+up with an inline SwiGLU finalize, MXFP4 experts.
+    /// Three outputs: raw gate and up, plus `mid = silu(clamp(gate, c)) *
+    /// clamp(up, -c, c) * route_weight`.
+    ///
+    /// The eight buffers are named on the emit function — p0 gate weights,
+    /// p1 up weights, p2 activations, p3/p4/p5 the three outputs, p6 ids,
+    /// p7 route weights — and the fourteen uniforms are `i32` except the final
+    /// clamp, which the call types as `f32`.
+    pub fn __tile_mul_mv_id_mxfp4_pair_swiglu_f32(
+        src0_gate: *const u8,
+        src0_up: *const u8,
+        src1: *const u8,
+        dst_gate: *mut f32,
+        dst_up: *mut f32,
+        dst_mid: *mut f32,
+        ids: *const u8,
+        weights: *const f32,
+        ne00: u32,
+        ne01: u32,
+        ne0: u32,
+        ne1: u32,
+        ne11: u32,
+        nei0: u32,
+        nbi1: u32,
+        nb01: u32,
+        nb02: u32,
+        nb11: u32,
+        nb12: u32,
+        mid_row_stride: u32,
+        weight_stride: u32,
+        clamp_value: f32,
+    ) -> u32;
+
+    /// f32 -> bf16 narrowing. The f32->bf16 direction; `__tile_cast_bf16_f32`
+    /// declared elsewhere is the widening one.
+    pub fn __tile_cast_f32_bf16(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
     /// Element-wise 1/sqrt(x).
     pub fn __tile_rsqrt_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
@@ -3690,6 +3922,41 @@ extern "C" {
     /// Element-wise min of two tiles.
     pub fn __tile_min_f32(dst: u32, a: u32, b: u32, rows: u32, cols: u32) -> u32;
 
+    /// This program's coordinate on the launch grid, along `axis`.
+    pub fn __tile_program_id(axis: u32) -> u32;
+
+    /// Scalar integer multiply/add over values that may only be known at
+    /// runtime — a grid coordinate and the constants that turn it into an
+    /// offset.
+    pub fn __tile_scalar_mul(a: u32, b: u32) -> u32;
+    pub fn __tile_scalar_add(a: u32, b: u32) -> u32;
+    /// Integer division and remainder on grid coordinates — `h / GROUP` and
+    /// `bh % H` are in every grouped-head kernel.
+    pub fn __tile_scalar_div(a: u32, b: u32) -> u32;
+    pub fn __tile_scalar_mod(a: u32, b: u32) -> u32;
+
+    /// Advance a kernel pointer by `elems` elements.
+    pub fn __tile_offset_ptr_f32(gm: *const f32, elems: u32) -> *const f32;
+
+    /// Store a `rows x cols` f32 tile into a view whose rows are `row_stride`
+    /// elements apart.
+    pub fn __tile_store_strided_f32(
+        gm: *mut f32,
+        tile: u32,
+        rows: u32,
+        cols: u32,
+        row_stride: u32,
+    );
+
+    /// Load a `rows x cols` f32 tile whose rows are `row_stride` elements
+    /// apart, rather than `cols` apart as `__tile_load_f32` assumes.
+    pub fn __tile_load_strided_f32(
+        gm: *const f32,
+        rows: u32,
+        cols: u32,
+        row_stride: u32,
+    ) -> u32;
+
     /// Hyperbolic tangent.
     pub fn __tile_tanh_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
@@ -3730,84 +3997,25 @@ extern "C" {
     /// Row-wise argmin: index of the minimum value per row → (R, 1) u32 indices.
     pub fn __tile_argmin_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
-    /// Top-`k` block ids from a row of scores → `(1, K)` indices.
-    ///
-    /// Distinct from `__tile_topk_f32`, which returns the top-k *values* and
-    /// writes indices through a host pointer — not expressible inside a Triton
-    /// kernel. This returns the indices as the tile.
-    ///
-    /// Ties break toward the **lower** index and the winners come back in
-    /// **ascending index order**: exactly
-    /// `argsort(descending=True, stable=True)[:k].sort()`. The tie-break is part
-    /// of the contract. Sparse-attention specs state it, and getting it wrong
-    /// changes which blocks a query attends to — a handful of wrong rows in
-    /// millions, which still fails a correctness gate.
-    pub fn __tile_topk_idx_f32(dst: u32, src: u32, rows: u32, cols: u32, k: u32) -> u32;
-
-    /// Gather `n` rows of width `d` from a `(m, d)` buffer, addressed by an
-    /// index **tile** rather than a host pointer.
-    ///
-    /// Distinct from `__tile_gather_f32`, whose `indices: *const u32` cannot be
-    /// expressed inside a Triton kernel. This takes the indices as a
-    /// `(1, n)` tile — typically the output of `__tile_topk_idx_f32` — so the
-    /// select-then-gather pair of a block-sparse attention becomes expressible
-    /// end to end in tile-rs.
-    pub fn __tile_gather_idx_f32(dst: u32, src: u32, idx: u32, n: u32, m: u32, d: u32) -> u32;
-
-    /// Exclusive prefix sum along the last axis → `(R, C)`.
-    ///
-    /// Exclusive because the use is always "how many before me" — a rank or a
-    /// slot index — and `cumsum - self` is the form that needs no shift.
-    pub fn __tile_cumsum_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
-
     /// Fused grouped-query attention: `softmax(Q @ Kᵀ) @ V` in one op.
     ///
     /// `q` is `(nh * seq, dim)` and `k`/`v` are `(nkv * seq, dim)` — the query
     /// heads share `nkv` key/value heads, and the sequence axis is folded into
-    /// the row count rather than dropped. The result is `(nh * seq, dim)` —
-    /// every head, laid out like `q`. It was documented as `(seq, dim)` "for the
-    /// head being computed", and the emitter stored exactly that: one head, with
-    /// the rest of the output left zero, while computing all of them.
-    /// `causal` is 0 or 1.
+    /// the row count rather than dropped. The result is `(seq, dim)` for the
+    /// head being computed.
     ///
-    /// This is the fused form: whole-operator, no visible stages. It was
-    /// described here as overflowing a 910B's 192 KB unified buffer, which is
-    /// why the decomposed and composed forms were said to exist. Measured, it
-    /// needs well under that; the overflow was an artefact of the emitter
-    /// falling back to an equal split of UB when it could not size one buffer.
-    pub fn __tile_attention_gqa_f32(
-        q: u32,
-        k: u32,
-        v: u32,
-        seq: u32,
-        dim: u32,
-        nh: u32,
-        nkv: u32,
-        causal: u32,
-    ) -> u32;
-
-    /// Fused GQA attention carrying a general mask instead of a causal flag.
+    /// There is NO causal operand: the form that carried one was the deleted
+    /// declaration noted below, and no backend receives it. Compose
+    /// `tile_causal_mask_f32` on the scores for a masked attention.
     ///
-    /// A shim over the same lowering. `__tile_attention_gqa_f32` can say only
-    /// "causal or not", so a windowed or strided operator had no fused form at
-    /// all: the mask was simply absent from the emitted MLIR and the kernel
-    /// computed full attention under a local label. Widening the existing
-    /// intrinsic would have changed a signature every front end writes against,
-    /// so the mask travels as two extra operands on a sibling.
-    ///
-    /// `mask_kind` is 0 none, 1 causal, 2 window, 3 strided. `mask_param` is the
-    /// window width or the stride, and is ignored by kinds 0 and 1.
-    pub fn __tile_attention_gqa_masked_f32(
-        q: u32,
-        k: u32,
-        v: u32,
-        seq: u32,
-        dim: u32,
-        nh: u32,
-        nkv: u32,
-        mask_kind: u32,
-        mask_param: u32,
-    ) -> u32;
+    /// This is the fused form: whole-operator, no visible stages. On a 910B it
+    /// overflows the 192 KB unified buffer, which is why the decomposed and
+    /// composed forms exist.
+    // A second `__tile_attention_gqa_f32` was declared here with a different
+    // operand order — (q, k, v, seq, dim, nh, nkv, causal), no dst. Two
+    // declarations of one symbol do not compile, and the surviving one is the
+    // (dst, q, k, v, heads_q, heads_kv, seq_len, head_dim) form above, which
+    // carries the record of being the order three backends implement.
 
     /// Top-p (nucleus) sampling: temperature-scaled softmax → cumsum → threshold at p.
     /// Returns sampled token indices per row → (R, 1) u32.
@@ -3876,6 +4084,16 @@ extern "C" {
     pub fn __tile_matvec_q2_k_f32(w: *const i8, x: *const f32, rows: u32, cols: u32) -> u32;
     pub fn __tile_matvec_iq2_xxs_f32(w: *const i8, x: *const f32, rows: u32, cols: u32) -> u32;
 
+    // f16-activation twins of the three quantised matvecs above. Each shares its
+    // f32 arm in `mlir_to_gpu` — one match arm names both spellings — so the
+    // signature follows from the arm, not from the name. The arm refuses under 4
+    // args and reads `args[2]` as the row count; the suffix selects the
+    // activation dtype, so only `x` changes, to the `*const u16` this crate uses
+    // for every f16 pointer.
+    pub fn __tile_matvec_q8_0_f16(w: *const i8, x: *const u16, rows: u32, cols: u32) -> u32;
+    pub fn __tile_matvec_q2_k_f16(w: *const i8, x: *const u16, rows: u32, cols: u32) -> u32;
+    pub fn __tile_matvec_iq2_xxs_f16(w: *const i8, x: *const u16, rows: u32, cols: u32) -> u32;
+
     /// Cooperative matvec with f16 weights and bias addition.
     pub fn __tile_matvec_f16_bias(dst: u32, a: u32, b: u32, bias: u32, rows: u32, cols: u32)
         -> u32;
@@ -3933,6 +4151,46 @@ extern "C" {
         rows: u32,
         cols: u32,
     ) -> u32;
+
+    /// f32 twin of the above. `mlir_to_cpp` dispatches both spellings from one
+    /// arm, so the operand order is identical by construction rather than by
+    /// resemblance: `args[1..=3]` are the activation and the two weight tiles,
+    /// `args[4..=5]` the extents, and the guard refuses under 6.
+    pub fn __tile_gate_up_silu_f32(
+        dst: u32,
+        a: u32,
+        w_gate: u32,
+        w_up: u32,
+        rows: u32,
+        cols: u32,
+    ) -> u32;
+
+    /// DS4 decode indexer, fused: `relu(K @ Qᵀ)` scored per group, then the
+    /// weighted row sum that selects the top-k candidates.
+    ///
+    /// Unlike every other intrinsic here it takes GM POINTERS rather than tile
+    /// handles, because the emitter lowers it to a two-kernel chain
+    /// (`indexer_qk_relu` → `indexer_wsum`) communicating through `ws` in
+    /// global memory: `q` (G×D f16), `k` (S2×D f16), `w` (1×G f32),
+    /// `ws` (S2×G f32, scratch), `o` (S2×1 f32).
+    ///
+    /// ⚠ This declaration was MISSING while the emitter arm and the corpus
+    /// that calls it both existed, so the composite could be emitted and
+    /// measured but no real tile-rs kernel could produce the call — the
+    /// artefact was reachable and the operator was not. It was also the chain
+    /// control in `composition_gate.py`, which made the least trustworthy
+    /// element the one carrying the most weight. Found by the check that ties
+    /// generated calls to their declarations.
+    pub fn __tile_indexer_decode_f16(
+        q: *const u16,
+        k: *const u16,
+        w: *const f32,
+        ws: *mut f32,
+        o: *mut f32,
+        g: u32,
+        d: u32,
+        s2: u32,
+    );
 }
 
 // --- f16 tile operations --------------------------------------------------
@@ -3946,6 +4204,135 @@ extern "C" {
 
     /// Element-wise add two f16 tiles.
     pub fn __tile_add_f16(dst: u32, src1: u32, src2: u32, rows: u32, cols: u32) -> u32;
+
+    /// bf16 -> f32 widening: `(dst, src, rows, cols)`, taken from the
+    /// mlir_to_gpu arm, which documents that order and refuses anything under
+    /// four args.
+    pub fn __tile_cast_bf16_f32(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+
+    pub fn __tile_attention_f16(
+        dst: u32,
+        q: u32,
+        k: u32,
+        v: u32,
+        seq_len: u32,
+        head_dim: u32,
+    ) -> u32;
+
+    /// Batched attention with sinks. Operand order is the emitter's own banner
+    /// in `mlir_to_gpu`, confirmed by its arity guard (refuses under 7) and by
+    /// which `args[..]` the arm reads (0..=6). Note there is no leading `dst`:
+    /// the output is the fourth operand.
+    pub fn __tile_attention_sink_batched_f32(
+        q: u32,
+        kv: u32,
+        sinks: u32,
+        out: u32,
+        n_head: u32,
+        s: u32,
+        d: u32,
+    ) -> u32;
+
+    /// The kq-split form of the same, with the extra `kq` extent. Banner, arity
+    /// guard (refuses under 8) and operand reads (0..=7) all agree.
+    pub fn __tile_attention_sink_batched_kq_f32(
+        q: u32,
+        kv: u32,
+        sinks: u32,
+        out: u32,
+        n_head: u32,
+        kq: u32,
+        s: u32,
+        d: u32,
+    ) -> u32;
+
+    /// Single-head attention with a sink logit: `__tile_attention_f32` plus a
+    /// `sinks` operand in the fifth slot. Order is the `mlir_to_pto` arm's own
+    /// comment — `(dst, q, k, v, sinks, S, D)` — confirmed by its arity guard
+    /// (refuses under 7) and by the operands it reads: `args[1..=3]` as the Q/K/V
+    /// tiles, `args[4]` as a pointer, `args[5..=6]` as the extents.
+    ///
+    /// `sinks` is a raw pointer, not a tile: the arm resolves it with
+    /// `resolve_ptr`, and it addresses at least one S-block of floats all equal
+    /// to this head's sink logit. The broadcast is the caller's job because the
+    /// widening op fills rows, not columns.
+    pub fn __tile_attention_sink_f32(
+        dst: u32,
+        q: u32,
+        k: u32,
+        v: u32,
+        sinks: u32,
+        seq_len: u32,
+        head_dim: u32,
+    ) -> u32;
+
+    /// One sequence shard of attention, returning the un-normalised numerator
+    /// alongside the running max and denominator so shards can be merged
+    /// exactly by log-sum-exp. Three outputs, in slots 2, 3 and 4 — the arm's
+    /// banner names `(q, kv, out_o, out_m, out_d, n_head, S, D)`, its guard
+    /// refuses under 8, and it reads `args[0..=7]` in that order.
+    ///
+    /// Sink-free by contract: a sink term is not distributive over the merge, so
+    /// the sharded form and `__tile_attention_sink_f32` are alternatives rather
+    /// than a pair. An empty shard is the merge's identity and never launches,
+    /// which is why the arm refuses a zero extent instead of emitting a no-op.
+    pub fn __tile_attention_partial_batched_f32(
+        q: u32,
+        kv: u32,
+        out_o: u32,
+        out_m: u32,
+        out_d: u32,
+        n_head: u32,
+        s: u32,
+        d: u32,
+    ) -> u32;
+
+    // f16 twins of ops the backends already lower. Each shares its f32 arm in
+    // mlir_to_gpu — the arm names both spellings — so the signature is the same
+    // by construction rather than by resemblance. Undeclared, they were kernels
+    // a backend could emit and no tile-rs source could call.
+    pub fn __tile_absmax_f16(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_clamp_f16(dst: u32, src: u32, lo: f32, hi: f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_concat_f16(dst: u32, a: u32, b: u32, rows: u32, cols_a: u32, cols_b: u32) -> u32;
+    pub fn __tile_fill_f16(dst: u32, scalar: f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_gather_f16(
+        dst: u32,
+        src: u32,
+        indices: *const u32,
+        n: u32,
+        m: u32,
+        d: u32,
+    ) -> u32;
+    pub fn __tile_rms_norm_f16(dst: u32, src: u32, eps: f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_rope_f16(dst: u32, src: u32, pos: u32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_scale_f16(dst: u32, src: u32, scalar: f32, rows: u32, cols: u32) -> u32;
+    pub fn __tile_scatter_f16(
+        dst: u32,
+        src: u32,
+        indices: *const u32,
+        n: u32,
+        m: u32,
+        d: u32,
+    ) -> u32;
+    pub fn __tile_slice_f16(
+        dst: u32,
+        src: u32,
+        row_off: u32,
+        col_off: u32,
+        src_rows: u32,
+        src_cols: u32,
+        dst_rows: u32,
+        dst_cols: u32,
+    ) -> u32;
+    pub fn __tile_topk_f16(
+        dst: u32,
+        src: u32,
+        indices_out: *mut u32,
+        rows: u32,
+        cols: u32,
+        k: u32,
+    ) -> u32;
+    pub fn __tile_transpose_f16(dst: u32, src: u32, rows: u32, cols: u32) -> u32;
 
     /// Element-wise multiply two f16 tiles.
     pub fn __tile_mul_f16(dst: u32, src1: u32, src2: u32, rows: u32, cols: u32) -> u32;
@@ -4031,6 +4418,93 @@ pub fn tile_load_f32<const ROWS: usize, const COLS: usize>(
         buf_id,
         _phantom: PhantomData,
     }
+}
+
+/// This program's coordinate on the launch grid, along `axis`.
+///
+/// A tile-rs kernel had no way to say which part of the problem it was for, so
+/// everything written against the tile API was a single block however much
+/// parallelism the operator had. With this, a kernel maps itself onto the grid
+/// the way a Triton kernel does.
+#[inline(always)]
+pub fn tile_program_id(axis: u32) -> u32 {
+    unsafe { __tile_program_id(axis) }
+}
+
+/// Scalar multiply, over grid coordinates as well as constants.
+#[inline(always)]
+pub fn tile_scalar_mul(a: u32, b: u32) -> u32 {
+    unsafe { __tile_scalar_mul(a, b) }
+}
+
+/// Scalar add, over grid coordinates as well as constants.
+#[inline(always)]
+pub fn tile_scalar_add(a: u32, b: u32) -> u32 {
+    unsafe { __tile_scalar_add(a, b) }
+}
+
+/// Integer division on grid coordinates, e.g. `h / GROUP` under GQA.
+#[inline(always)]
+pub fn tile_scalar_div(a: u32, b: u32) -> u32 {
+    unsafe { __tile_scalar_div(a, b) }
+}
+
+/// Integer remainder on grid coordinates, e.g. `bh % H`.
+#[inline(always)]
+pub fn tile_scalar_mod(a: u32, b: u32) -> u32 {
+    unsafe { __tile_scalar_mod(a, b) }
+}
+
+/// Advance a pointer by `elems` elements, so a block can address its own slice.
+///
+/// # Safety
+/// The result must stay within the allocation.
+#[inline(always)]
+pub unsafe fn tile_offset_ptr_f32(gm: *const f32, elems: u32) -> *const f32 {
+    __tile_offset_ptr_f32(gm, elems)
+}
+
+/// Load an f32 tile whose rows are `ROW_STRIDE` elements apart.
+///
+/// `tile_load_f32` assumes a tile is contiguous — that element `(i, j)` lives at
+/// `i * COLS + j`. That is true of a whole buffer and false of almost every
+/// *view* into one: a head slice of `[B, T, H, K]` has a row stride of `H * K`,
+/// and a per-token scalar column of `[B, T, H]` has a row stride of `H` with
+/// `COLS = 1`. Without this, such an operator cannot be written in the tile API
+/// at all, and the caller has to materialise a contiguous copy first.
+///
+/// `ROW_STRIDE` is a const generic because the emitter resolves it at compile
+/// time to build the index vector; it is measured in elements, not bytes.
+///
+/// # Safety
+/// `gm` must address `(ROWS - 1) * ROW_STRIDE + COLS` readable f32 values.
+#[inline(always)]
+pub fn tile_load_strided_f32<const ROWS: usize, const COLS: usize, const ROW_STRIDE: usize>(
+    gm: *const f32,
+) -> Tile<ROWS, COLS, f32> {
+    let buf_id =
+        unsafe { __tile_load_strided_f32(gm, ROWS as u32, COLS as u32, ROW_STRIDE as u32) };
+    Tile {
+        buf_id,
+        _phantom: PhantomData,
+    }
+}
+
+/// Store an f32 tile into a view whose rows are `ROW_STRIDE` elements apart.
+///
+/// The mirror of `tile_load_strided_f32`: an operator's output is a view as
+/// often as its input is.
+///
+/// # Safety
+/// `gm` must address `(ROWS - 1) * ROW_STRIDE + COLS` writable f32 values.
+#[inline(always)]
+pub fn tile_store_strided_f32<const ROWS: usize, const COLS: usize, const ROW_STRIDE: usize>(
+    gm: *mut f32,
+    tile: Tile<ROWS, COLS, f32>,
+) {
+    unsafe {
+        __tile_store_strided_f32(gm, tile.buf_id, ROWS as u32, COLS as u32, ROW_STRIDE as u32)
+    };
 }
 
 /// Store an f32 tile to global memory. Consumes the tile handle.
@@ -4222,25 +4696,6 @@ pub fn tile_attention_f32<const S: usize, const D: usize>(
     }
 }
 
-/// Causal scaled dot-product attention: row `r` attends to keys `0..=r`.
-///
-/// Equivalent to [`tile_attention_f32`] followed by a causal mask, but
-/// causality is known at compile time, so a backend may skip the
-/// above-diagonal work instead of computing and discarding it. Results are
-/// bit-identical to the mask-after form: masked entries contribute exactly
-/// `+0.0` to the softmax sum and to the value accumulation.
-#[inline(always)]
-pub fn tile_attention_causal_f32<const S: usize, const D: usize>(
-    q: Tile<S, D, f32>,
-    k: Tile<S, D, f32>,
-    v: Tile<S, D, f32>,
-) -> Tile<S, D, f32> {
-    let buf_id = unsafe {
-        __tile_attention_causal_f32(0, q.buf_id, k.buf_id, v.buf_id, S as u32, D as u32)
-    };
-    Tile { buf_id, _phantom: PhantomData }
-}
-
 // ── Transformer building-block wrappers ─────────────────────────────
 
 /// SiLU/Swish: silu(x) = x * sigmoid(x).
@@ -4256,6 +4711,12 @@ pub fn tile_silu_f32<const ROWS: usize, const COLS: usize>(
 }
 
 /// RoPE: rotary position embedding at position `pos`.
+///
+/// ⚠ On the AscendC backend this currently lowers to an **identity copy** and
+/// `pos` is discarded — the Ascend AI core has no scalar libm, so the rotation
+/// needs either a host-precomputed cos/sin table (a signature change) or a
+/// vector approximation. Measured on a 910B2: at `pos = 0` and `pos = 7` the
+/// result is bit-identical to the input. Other backends implement it fully.
 #[inline(always)]
 pub fn tile_rope_f32<const ROWS: usize, const COLS: usize>(
     src: Tile<ROWS, COLS, f32>,
@@ -4337,60 +4798,28 @@ pub fn tile_attention_gqa_f32<
     v: Tile<KVROWS, DIM, f32>,
     nh: u32,
     nkv: u32,
-    causal: u32,
-) -> Tile<QROWS, DIM, f32> {
+) -> Tile<SEQ, DIM, f32> {
+    // The ABI is (dst, q, k, v, heads_q, heads_kv, seq_len, head_dim). This
+    // call used to omit `dst` and append `causal`, which shifted every operand
+    // by one: q landed in dst, k in q, and SEQ in v. mlir_to_cpp refuses that
+    // -- "operand 3 (v) ... is not a tile handle" -- so the operator was
+    // declared, lowered, and unusable from any Rust source.
+    //
+    // This took a `causal: u32` until it was removed: the ABI has no causal
+    // operand, no backend received it, and nothing in the tree passed a
+    // non-zero one. Accepting an argument that is silently not lowered is the
+    // defect this crate keeps finding elsewhere. Compose
+    // `tile_causal_mask_f32` on the scores for a masked attention.
     let buf_id = unsafe {
         __tile_attention_gqa_f32(
+            0,
             q.buf_id,
             k.buf_id,
             v.buf_id,
-            SEQ as u32,
-            DIM as u32,
             nh,
             nkv,
-            causal,
-        )
-    };
-    Tile {
-        buf_id,
-        _phantom: PhantomData,
-    }
-}
-
-/// Fused grouped-query attention with a general mask.
-///
-/// The shim sibling of [`tile_attention_gqa_f32`]. Same shapes and the same
-/// lowering; the difference is that the mask is described rather than reduced to
-/// a causal yes/no, so a windowed or strided operator has a fused form at all.
-///
-/// `mask_kind` is 0 none, 1 causal, 2 window, 3 strided. `mask_param` carries the
-/// window width or the stride and is ignored by the first two.
-#[inline(always)]
-pub fn tile_attention_gqa_masked_f32<
-    const QROWS: usize,
-    const KVROWS: usize,
-    const DIM: usize,
-    const SEQ: usize,
->(
-    q: Tile<QROWS, DIM, f32>,
-    k: Tile<KVROWS, DIM, f32>,
-    v: Tile<KVROWS, DIM, f32>,
-    nh: u32,
-    nkv: u32,
-    mask_kind: u32,
-    mask_param: u32,
-) -> Tile<QROWS, DIM, f32> {
-    let buf_id = unsafe {
-        __tile_attention_gqa_masked_f32(
-            q.buf_id,
-            k.buf_id,
-            v.buf_id,
             SEQ as u32,
             DIM as u32,
-            nh,
-            nkv,
-            mask_kind,
-            mask_param,
         )
     };
     Tile {
@@ -4778,6 +5207,23 @@ pub fn tile_max_f32<const ROWS: usize, const COLS: usize>(
     }
 }
 
+/// Element-wise min of two tiles.
+///
+/// The `__tile_min_f32` intrinsic and the emitter arm for it both existed; only
+/// this wrapper was missing, so `min(x, 0)` — the clamp in a gated linear
+/// attention decay, among others — had no safe spelling.
+#[inline(always)]
+pub fn tile_min_f32<const ROWS: usize, const COLS: usize>(
+    a: Tile<ROWS, COLS, f32>,
+    b: Tile<ROWS, COLS, f32>,
+) -> Tile<ROWS, COLS, f32> {
+    let buf_id = unsafe { __tile_min_f32(0, a.buf_id, b.buf_id, ROWS as u32, COLS as u32) };
+    Tile {
+        buf_id,
+        _phantom: PhantomData,
+    }
+}
+
 // tile_sub_f32, tile_reduce_max_f32, tile_div_f32 are defined earlier in
 // this module. The Phase-3 block previously redeclared them; duplicates
 // have been removed.
@@ -4872,56 +5318,16 @@ pub fn tile_absmax_f32<const ROWS: usize, const COLS: usize>(
 // ── Phase 6: Multi-token prediction / speculative decoding wrappers ──
 
 /// Row-wise argmax: returns index of max value per row → (R, 1) u32 indices.
+///
+/// ⚠ The AscendC emitter currently stores the numeric index as an f32 because
+/// its vector buffers still have one kernel-wide element type. The Rust return
+/// type remains u32, so generated AscendC carries a substitution marker until
+/// per-buffer typing makes the representation match this contract.
 #[inline(always)]
 pub fn tile_argmax_f32<const ROWS: usize, const COLS: usize>(
     src: Tile<ROWS, COLS, f32>,
 ) -> Tile<ROWS, 1, u32> {
     let buf_id = unsafe { __tile_argmax_f32(0, src.buf_id, ROWS as u32, COLS as u32) };
-    Tile {
-        buf_id,
-        _phantom: PhantomData,
-    }
-}
-
-/// Top-`K` block ids, ties to the lower index, returned in ascending order.
-///
-/// The index branch of a block-sparse attention: `src` holds one score per key
-/// block and the result names the blocks the main branch attends over.
-#[inline(always)]
-pub fn tile_topk_idx_f32<const COLS: usize, const K: usize>(
-    src: Tile<1, COLS, f32>,
-) -> Tile<1, K, u32> {
-    let buf_id = unsafe { __tile_topk_idx_f32(0, src.buf_id, 1, COLS as u32, K as u32) };
-    Tile {
-        buf_id,
-        _phantom: PhantomData,
-    }
-}
-
-/// Gather rows selected by an index tile: `out[i] = src[idx[i]]`.
-///
-/// The main branch of a block-sparse attention — `idx` names the blocks the
-/// index branch chose, and this reads only those rows.
-#[inline(always)]
-pub fn tile_gather_idx_f32<const N: usize, const M: usize, const D: usize>(
-    src: Tile<M, D, f32>,
-    idx: Tile<1, N, u32>,
-) -> Tile<N, D, f32> {
-    let buf_id = unsafe {
-        __tile_gather_idx_f32(0, src.buf_id, idx.buf_id, N as u32, M as u32, D as u32)
-    };
-    Tile {
-        buf_id,
-        _phantom: PhantomData,
-    }
-}
-
-/// Exclusive prefix sum along the last axis.
-#[inline(always)]
-pub fn tile_cumsum_f32<const ROWS: usize, const COLS: usize>(
-    src: Tile<ROWS, COLS, f32>,
-) -> Tile<ROWS, COLS, f32> {
-    let buf_id = unsafe { __tile_cumsum_f32(0, src.buf_id, ROWS as u32, COLS as u32) };
     Tile {
         buf_id,
         _phantom: PhantomData,
@@ -5348,25 +5754,11 @@ pub fn tile_matvec_f16_add<const ROWS: usize, const COLS: usize>(
 /// Fused gate+up+silu: out[i] = silu(A @ W_gate[i,:]) * (A @ W_up[i,:]).
 /// Reads activation vector once, computes both gate and up projections, then fuses silu*mul.
 #[inline(always)]
-/// Fused gate/up SiLU: `silu(a @ w_gate^T) * (a @ w_up^T)`.
-///
-/// Returns `Tile<1, N>`, the SAME orientation as [`tile_matvec_f16`], because it
-/// computes the same shape of thing: one value per output row. It used to return
-/// `Tile<N, 1>`, and that transposition was not a convention — it was a wall.
-/// A decode MLP feeds this straight into `down_proj`, which takes `Tile<1, K>`,
-/// so the transposed form could not be chained without a transpose that no
-/// intrinsic provides. `mlir_to_tile_rs` refused every shaped `gate_up_silu` for
-/// exactly this reason while accepting every other projection, which is how it
-/// was found: it was the one hole left in tile-rs's strict coverage.
-///
-/// Nothing depended on the old orientation. Every other reference to this
-/// intrinsic matches it by NAME (the emitters dispatch on the callee), and the
-/// device data was always N contiguous values either way.
 pub fn tile_gate_up_silu_f16<const N: usize, const K: usize>(
     a: Tile<1, K, f32>,
     w_gate: Tile<N, K, f32>, // runtime: bf16 weights
     w_up: Tile<N, K, f32>,   // runtime: bf16 weights
-) -> Tile<1, N, f32> {
+) -> Tile<N, 1, f32> {
     let buf_id = unsafe {
         __tile_gate_up_silu_f16(0, a.buf_id, w_gate.buf_id, w_up.buf_id, N as u32, K as u32)
     };
@@ -5658,6 +6050,12 @@ pub mod safe {
     }
 
     #[inline(always)]
+    #[tile::substituted(
+        backend = "ascendc",
+        intrinsic = "__tile_argmax_f32",
+        replacement = "f32-index-storage",
+        reason = "u32-buffer-typing-unavailable"
+    )]
     pub fn tile_argmax_f32<const R: usize, const C: usize>(t: Tile<R, C, f32>) -> Tile<R, 1, u32> {
         unsafe { super::tile_argmax_f32(t) }
     }
@@ -5700,11 +6098,12 @@ pub mod safe {
     }
 
     #[inline(always)]
-    pub fn tile_attention_causal_f32<const S: usize, const D: usize>(
-        q: Tile<S, D, f32>, k: Tile<S, D, f32>, v: Tile<S, D, f32>,
-    ) -> Tile<S, D, f32> { unsafe { super::tile_attention_causal_f32(q, k, v) } }
-
-    #[inline(always)]
+    #[tile::substituted(
+        backend = "ascendc",
+        intrinsic = "__tile_rope_f32",
+        replacement = "identity-copy",
+        reason = "missing-cos-sin-operands"
+    )]
     pub fn tile_rope_f32<const R: usize, const C: usize>(
         t: Tile<R, C, f32>,
         pos: u32,
@@ -5875,29 +6274,8 @@ pub mod safe {
         v: Tile<KVROWS, DIM, f32>,
         nh: u32,
         nkv: u32,
-        causal: u32,
-    ) -> Tile<QROWS, DIM, f32> {
-        super::tile_attention_gqa_f32::<QROWS, KVROWS, DIM, SEQ>(q, k, v, nh, nkv, causal)
-    }
-
-    #[inline(always)]
-    pub fn tile_attention_gqa_masked_f32<
-        const QROWS: usize,
-        const KVROWS: usize,
-        const DIM: usize,
-        const SEQ: usize,
-    >(
-        q: Tile<QROWS, DIM, f32>,
-        k: Tile<KVROWS, DIM, f32>,
-        v: Tile<KVROWS, DIM, f32>,
-        nh: u32,
-        nkv: u32,
-        mask_kind: u32,
-        mask_param: u32,
-    ) -> Tile<QROWS, DIM, f32> {
-        super::tile_attention_gqa_masked_f32::<QROWS, KVROWS, DIM, SEQ>(
-            q, k, v, nh, nkv, mask_kind, mask_param,
-        )
+    ) -> Tile<SEQ, DIM, f32> {
+        super::tile_attention_gqa_f32(q, k, v, nh, nkv)
     }
 
     #[inline(always)]
@@ -5937,7 +6315,7 @@ pub mod safe {
         a: Tile<1, K, f32>,
         w_gate: Tile<N, K, f32>,
         w_up: Tile<N, K, f32>,
-    ) -> Tile<1, N, f32> {
+    ) -> Tile<N, 1, f32> {
         super::tile_gate_up_silu_f16(a, w_gate, w_up)
     }
 }

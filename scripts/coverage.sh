@@ -12,7 +12,6 @@
 #   bash scripts/coverage.sh                 # print per-crate + TOTAL table
 #   bash scripts/coverage.sh --gate 50       # exit non-zero if TOTAL line% < 50
 #   bash scripts/coverage.sh --html          # also write target/llvm-cov/html
-#   bash scripts/coverage.sh --also DIR      # also measure the standalone crate in DIR
 #   COVERAGE_GATE=50 bash scripts/coverage.sh # gate via env (used by CI)
 #
 # NOT measured here (documented in docs/TILE_RS_COVERAGE.md):
@@ -29,14 +28,11 @@ cd "$REPO_ROOT"
 
 GATE="${COVERAGE_GATE:-}"
 WANT_HTML=0
-# Extra standalone crates to measure, each given with --also <dir>.
-ALSO_DIRS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --gate) GATE="$2"; shift 2 ;;
     --gate=*) GATE="${1#*=}"; shift ;;
     --html) WANT_HTML=1; shift ;;
-    --also) ALSO_DIRS+=("$2"); shift 2 ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
 done
@@ -143,10 +139,8 @@ run_cov_p() {
 
 FAILED=0
 
-# --- The open core: trait + registry, plus the Metal emitter and the MLIR
-#     parser (`emitters`). Running this crate's tests runs the emitter's
-#     in-source unit tests, so its lines are measured here, once. ---
-run_cov tile_codegen "$REPO_ROOT/crates/tile_codegen" --features emitters
+# --- The open core: trait + registry (std-only). ---
+run_cov tile_codegen "$REPO_ROOT/crates/tile_codegen"
 
 # --- The HAL: backend-agnostic dispatch traits (a workspace member). ---
 run_cov_p tile_hal tile_hal
@@ -158,15 +152,16 @@ run_cov_p tile_hal tile_hal
 #     run inside a real expansion, so it stays uncovered here (documented gap).
 run_cov_p tile_std_macros tile_std_macros
 
-# --- The executable GWT spec layer and the std-only `gherkin` runner. Its
-#     scenarios reach the emitters through tile_codegen's registry; it includes
-#     no emitter source itself. ---
+# --- The executable GWT spec layer + the 14 open pure emitters + shared MLIR
+#     parser. `tile_spec`'s cucumber harness `#[path]`-includes the canonical
+#     `rustc_codegen_tile/src/mlir_to_*.rs` (no LLVM), so running its tests both
+#     drives the GWT scenarios AND runs every emitter's in-source unit tests --
+#     this single run reports line/region coverage for ALL 14 open backends,
+#     `mlir_parse`, and the std-only `gherkin` runner. (The `codegen_tests`
+#     crate carries byte-identical LOCAL copies of the same emitters for the
+#     generality-matrix tests; covering them here via the canonical paths avoids
+#     double-counting the same source twice under two filenames.) ---
 run_cov tile_spec "$REPO_ROOT/crates/tile_spec"
-
-# --- Any extra standalone crates named with --also. ---
-for d in ${ALSO_DIRS[@]+"${ALSO_DIRS[@]}"}; do
-  run_cov "$(basename "$d")" "$REPO_ROOT/$d"
-done
 
 echo
 python3 "$TALLY" "$OUTDIR"

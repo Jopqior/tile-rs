@@ -47,19 +47,17 @@ pub fn rms_norm(
 
 /// Fused grouped-query attention. Emitted for `attn_gqa`: q is (nh*seq, dim)
 /// with nh=12, seq=16, dim=64; k and v are (nkv*seq, dim) with nkv=2; the
-/// result is (nh * seq, dim) — every head, laid out like q — so the destination
-/// view has q's row count. It was (seq, dim) here, matching a declaration that
-/// said the same and an emitter that stored one head and left the rest zero.
+/// result is (seq, dim), and SEQ is inferable only from the destination view.
 pub fn attn_gqa(
     p0: GmView<'_, 192, 64, f32>,
     p1: GmView<'_, 32, 64, f32>,
     p2: GmView<'_, 32, 64, f32>,
-    p3: GmViewMut<'_, 192, 64, f32>,
+    p3: GmViewMut<'_, 16, 64, f32>,
 ) {
     let v0 = tile_load_view_f32(&p0);
     let v1 = tile_load_view_f32(&p1);
     let v2 = tile_load_view_f32(&p2);
-    let v3 = safe::tile_attention_gqa_f32::<192, 32, 64, 16>(v0, v1, v2, 12, 2, 1);
+    let v3 = safe::tile_attention_gqa_f32(v0, v1, v2, 12, 2);
     tile_store_view_f32(&p3, v3);
 }
 
@@ -110,13 +108,13 @@ pub fn q_proj(
     tile_store_view_f32(&p2, v2);
 }
 
-/// Fused gate/up SiLU, `(1, N)` — the same orientation as matvec, so the result
-/// chains straight into `down_proj` without a transpose no intrinsic provides.
+/// Fused gate/up SiLU, which returns `(N, 1)` — note the transposed result
+/// shape relative to matvec.
 pub fn gate_up_silu(
     p0: GmView<'_, 1, 1536, f32>,
     p1: GmView<'_, 8960, 1536, f32>,
     p2: GmView<'_, 8960, 1536, f32>,
-    p3: GmViewMut<'_, 1, 8960, f32>,
+    p3: GmViewMut<'_, 8960, 1, f32>,
 ) {
     let v0 = tile_load_view_f32(&p0);
     let v1 = tile_load_view_f32(&p1);

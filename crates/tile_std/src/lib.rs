@@ -21,7 +21,8 @@
     prelude_import,
     never_type,
     min_specialization,
-    generic_const_exprs
+    generic_const_exprs,
+    register_tool
 )]
 #![allow(
     dead_code,
@@ -33,6 +34,7 @@
 #![no_std]
 #![no_core]
 #![rustc_coherence_is_core]
+#![register_tool(tile)]
 
 pub mod buf;
 pub mod core;
@@ -114,6 +116,20 @@ extern "C" {
     pub fn __tile_cos_f32(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_atan_f32(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_erf_f32(dst: UbBuf, src: UbBuf, n: u32);
+
+    // Elementwise math `mlir_to_msl` lowers from its own op table, which gives
+    // both the Metal expression and the operand count — `acos` and friends at 1,
+    // `pow`/`fmod` at 2. Declared in the buffer convention because that is what
+    // their table-neighbours atan and erf already use, so the shape follows the
+    // siblings the same emitter handles rather than a guess.
+    pub fn __tile_acos_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_asin_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_cbrt_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_cosh_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_sinh_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_square_f32(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_pow_f32(dst: UbBuf, src1: UbBuf, src2: UbBuf, n: u32);
+    pub fn __tile_fmod_f32(dst: UbBuf, src1: UbBuf, src2: UbBuf, n: u32);
     pub fn __tile_erfinv_f32(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_fast_gelu_f32(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_not_f32(dst: UbBuf, src: UbBuf, n: u32);
@@ -162,6 +178,14 @@ extern "C" {
     pub fn __tile_cos_f16(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_atan_f16(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_erf_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_acos_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_asin_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_cbrt_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_cosh_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_sinh_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_square_f16(dst: UbBuf, src: UbBuf, n: u32);
+    pub fn __tile_pow_f16(dst: UbBuf, src1: UbBuf, src2: UbBuf, n: u32);
+    pub fn __tile_fmod_f16(dst: UbBuf, src1: UbBuf, src2: UbBuf, n: u32);
     pub fn __tile_erfinv_f16(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_fast_gelu_f16(dst: UbBuf, src: UbBuf, n: u32);
     pub fn __tile_not_f16(dst: UbBuf, src: UbBuf, n: u32);

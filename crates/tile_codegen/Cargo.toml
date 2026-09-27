@@ -3,7 +3,7 @@ name = "tile_codegen"
 version = "0.0.1"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "tile-rs open codegen skeleton: the CodegenTarget trait + target registry. Std-only (no LLVM/MLIR/melior/rustc deps) — the open core of tile-rs. Target backends plug in as CodegenTarget impls registered on a TargetRegistry."
+description = "tile-rs open codegen skeleton: the CodegenTarget trait + target registry. Std-only (no LLVM/MLIR/melior/rustc deps) — the open core of tile-rs. Target backends plug in as CodegenTarget impls; the closed Ascend (AscendC/PTO) backend registers the same way behind the `ascend` feature."
 
 # Standalone workspace: this open crate is `exclude`d from the repo root
 # workspace, and an empty `[workspace]` table here makes `cd crates/tile_codegen
@@ -20,10 +20,19 @@ path = "src/lib.rs"
 # reference target). This is what builds & tests on any box, including macOS.
 default = []
 
-# `emitters` wires the open MLIR->source emitter: the Apple Metal (MSL) arm and
-# the target-neutral MLIR parser it reads. Std-only, builds anywhere.
+# `emitters` wires the real MLIR->source emitters (convert_mlir_to_*). They live
+# in the full `rustc_codegen_tile` tree and import `crate::mlir_parse`; built on
+# an LLVM-20 box (adablue/910c). Kept off here so the skeleton stays standalone.
 emitters = []
 
+# `ascend` adds the CLOSED AscendC + PTO targets (non-open-source). Registered as
+# a peer of every other target — demoting Ascend "to the same level" is exactly a
+# `register(Box::new(AscendTarget::cpp()))` call, not a special code path.
+
 [target.'cfg(target_os = "macos")'.dev-dependencies]
-# GPU check for emitted Metal kernels (tests/msl_indexer_scores_tiled.rs).
+# GPU check for emitted Metal kernels (tests/msl_*).
 metal = "0.29"
+
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("ascend"))'] }

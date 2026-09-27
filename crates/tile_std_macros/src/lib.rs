@@ -49,26 +49,107 @@ pub fn aiv_kernel(input: proc_macro::TokenStream, item: proc_macro::TokenStream)
 /// Shared expansion logic for the kernel-entry attribute. Both
 /// [`tile_kernel`] (canonical) and the deprecated [`aiv_kernel`] alias call
 /// into this.
-/// Parse an optional `budget = <expr>` from the attribute args. When present, the
-/// kernel declares the per-tile shared-memory / UB budget of its target, and every
-/// GmView/GmViewMut tile footprint is checked against it at COMPILE TIME (F1).
-fn parse_budget(input: proc_macro::TokenStream) -> Option<proc_macro2::TokenStream> {
-    if input.is_empty() {
-        return None;
-    }
-    // Accept `budget = <expr>`; fall back to the bare expr for ergonomics.
-    let input2: proc_macro2::TokenStream = input.into();
-    let s = input2.to_string();
-    let expr_str = if let Some(eq) = s.find('=') {
-        s[eq + 1..].trim().to_string()
-    } else {
-        s.trim().to_string()
+/// Parsed attribute args for `#[tile_kernel(...)]`.
+struct KernelAttrs {
+    budget: Option<proc_macro2::TokenStream>,
+    k_unroll: Option<proc_macro2::TokenStream>,
+}
+
+/// Parse `budget = <expr>` and/or `schedule(k_unroll = <expr>)` from the
+/// attribute args. Bare-expr fallback (no `=`, no `schedule(`) stays budget
+/// for backwards compatibility with existing kernels.
+fn parse_kernel_attrs(input: proc_macro2::TokenStream) -> KernelAttrs {
+    let mut out = KernelAttrs {
+        budget: None,
+        k_unroll: None,
     };
-    expr_str.parse::<proc_macro2::TokenStream>().ok()
+    if input.is_empty() {
+        return out;
+    }
+    let s = input;
+    let text = s.to_string();
+
+    // Split on top-level commas so `budget = N, schedule(k_unroll = M)` works.
+    let mut parts: Vec<String> = Vec::new();
+    let mut depth = 0i32;
+    let mut cur = String::new();
+    for ch in text.chars() {
+        match ch {
+            '(' | '[' | '{' => {
+                depth += 1;
+                cur.push(ch);
+            }
+            ')' | ']' | '}' => {
+                depth -= 1;
+                cur.push(ch);
+            }
+            ',' if depth == 0 => {
+                parts.push(cur.trim().to_string());
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    if !cur.trim().is_empty() {
+        parts.push(cur.trim().to_string());
+    }
+
+    let mut saw_explicit = false;
+    for part in parts {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
+        }
+        if let Some(rest) = p.strip_prefix("budget") {
+            saw_explicit = true;
+            let expr = rest.trim().trim_start_matches('=').trim();
+            if !expr.is_empty() {
+                out.budget = expr.parse().ok();
+            }
+        } else if p.starts_with("schedule") {
+            saw_explicit = true;
+            // Inside schedule(...): k_unroll = <expr>
+            let inner = p
+                .trim_start_matches("schedule")
+                .trim()
+                .trim_start_matches('(')
+                .trim_end_matches(')')
+                .trim();
+            for field in inner.split(',') {
+                let field = field.trim();
+                if let Some(rest) = field.strip_prefix("k_unroll") {
+                    let expr = rest.trim().trim_start_matches('=').trim();
+                    if !expr.is_empty() {
+                        out.k_unroll = expr.parse().ok();
+                    }
+                }
+            }
+        } else if let Some(rest) = p.strip_prefix("k_unroll") {
+            // Flat form: k_unroll = <expr> (no schedule wrapper).
+            saw_explicit = true;
+            let expr = rest.trim().trim_start_matches('=').trim();
+            if !expr.is_empty() {
+                out.k_unroll = expr.parse().ok();
+            }
+        }
+    }
+
+    // Bare-expr legacy: `#[tile_kernel(4096)]` / `#[tile_kernel(budget = 4096)]`
+    // already handled above via prefix; if nothing matched, treat whole input
+    // as budget when it has no identifiers that look like schedule fields.
+    if !saw_explicit && out.budget.is_none() && out.k_unroll.is_none() {
+        let expr_str = if let Some(eq) = text.find('=') {
+            text[eq + 1..].trim().to_string()
+        } else {
+            text.trim().to_string()
+        };
+        out.budget = expr_str.parse().ok();
+    }
+    out
 }
 
 fn expand(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
-    let budget = parse_budget(input);
+    let KernelAttrs { budget, k_unroll } = parse_kernel_attrs(input.into());
     let mut item = parse_macro_input!(item as ItemFn);
 
     // Walk the signature, pulling any GmView / GmViewMut params out.
@@ -79,44 +160,43 @@ fn expand(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> Toke
     let mut view_params: Vec<ViewParam> = Vec::new();
 
     for arg in item.sig.inputs.iter_mut() {
-        if let FnArg::Typed(pat_ty) = arg {
-            if let Some(view) = match_view_type(&pat_ty.ty) {
-                let orig_name = ident_of_pat(&pat_ty.pat).unwrap_or_else(|| {
-                    // Should be rare — caller used a tuple/wildcard pattern on a
-                    // view. We can't bind it then; fall back to a generated name.
-                    syn::Ident::new("__tile_view", proc_macro2::Span::call_site())
-                });
-                let ptr_name =
-                    syn::Ident::new(&format!("__tile_ptr_{}", orig_name), orig_name.span());
+        if let FnArg::Typed(pat_ty) = arg
+            && let Some(view) = match_view_type(&pat_ty.ty)
+        {
+            let orig_name = ident_of_pat(&pat_ty.pat).unwrap_or_else(|| {
+                // Should be rare — caller used a tuple/wildcard pattern on a
+                // view. We can't bind it then; fall back to a generated name.
+                syn::Ident::new("__tile_view", proc_macro2::Span::call_site())
+            });
+            let ptr_name = syn::Ident::new(&format!("__tile_ptr_{}", orig_name), orig_name.span());
 
-                // Rewrite the param:  GmView<'_, R, C, T>  ->  *const T
-                //                     GmViewMut<'_, R, C, T> -> *mut T
-                let elem_ty = &view.elem;
-                let new_ty: Type = if view.is_mut {
-                    parse_quote!(*mut #elem_ty)
-                } else {
-                    parse_quote!(*const #elem_ty)
-                };
-                *pat_ty.ty = new_ty;
+            // Rewrite the param:  GmView<'_, R, C, T>  ->  *const T
+            //                     GmViewMut<'_, R, C, T> -> *mut T
+            let elem_ty = &view.elem;
+            let new_ty: Type = if view.is_mut {
+                parse_quote!(*mut #elem_ty)
+            } else {
+                parse_quote!(*const #elem_ty)
+            };
+            *pat_ty.ty = new_ty;
 
-                // Rewrite the pattern to the shadow pointer name.
-                *pat_ty.pat = Pat::Ident(PatIdent {
-                    attrs: Vec::new(),
-                    by_ref: None,
-                    mutability: None,
-                    ident: ptr_name.clone(),
-                    subpat: None,
-                });
+            // Rewrite the pattern to the shadow pointer name.
+            *pat_ty.pat = Pat::Ident(PatIdent {
+                attrs: Vec::new(),
+                by_ref: None,
+                mutability: None,
+                ident: ptr_name.clone(),
+                subpat: None,
+            });
 
-                view_params.push(ViewParam {
-                    orig_name,
-                    ptr_name,
-                    rows: view.rows,
-                    cols: view.cols,
-                    elem: view.elem,
-                    is_mut: view.is_mut,
-                });
-            }
+            view_params.push(ViewParam {
+                orig_name,
+                ptr_name,
+                rows: view.rows,
+                cols: view.cols,
+                elem: view.elem,
+                is_mut: view.is_mut,
+            });
         }
     }
 
@@ -157,7 +237,7 @@ fn expand(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> Toke
         }
         // Splice the prelude statements to the front of the block.
         let mut new_stmts: Vec<syn::Stmt> = prelude;
-        new_stmts.extend(item.block.stmts.drain(..));
+        new_stmts.append(&mut item.block.stmts);
         item.block.stmts = new_stmts;
     }
 
@@ -177,6 +257,15 @@ fn expand(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> Toke
     if let Some(budget_expr) = &budget {
         let budget_attr: syn::Attribute = parse_quote!(#[tile::budget(#budget_expr)]);
         item.attrs.push(budget_attr);
+    }
+
+    // If a schedule was declared (`schedule(k_unroll = N)`), emit the flat
+    // `#[tile::k_unroll(N)]` marker so the rustc backend stamps
+    // `tile.k_unroll = N` onto the MLIR function. Emitters that lower matmul
+    // through emit_unrolled_k_accumulation honour it (same sum order).
+    if let Some(k_expr) = &k_unroll {
+        let k_attr: syn::Attribute = parse_quote!(#[tile::k_unroll(#k_expr)]);
+        item.attrs.push(k_attr);
     }
 
     item.into_token_stream().into()
@@ -386,6 +475,46 @@ mod tests {
             match_view_type(&ty("GmView<'a, 32>")).is_none(),
             "incomplete view rejected"
         );
+    }
+
+    fn attrs(s: &str) -> KernelAttrs {
+        let ts: proc_macro2::TokenStream = s.parse().expect("parse attr args");
+        parse_kernel_attrs(ts)
+    }
+
+    #[test]
+    fn parse_budget_only() {
+        let a = attrs("budget = 4096");
+        assert_eq!(a.budget.map(|t| t.to_string()), Some("4096".into()));
+        assert!(a.k_unroll.is_none());
+    }
+
+    #[test]
+    fn parse_schedule_k_unroll_only() {
+        let a = attrs("schedule(k_unroll = 8)");
+        assert!(a.budget.is_none());
+        assert_eq!(a.k_unroll.map(|t| t.to_string()), Some("8".into()));
+    }
+
+    #[test]
+    fn parse_budget_and_schedule_together() {
+        let a = attrs("budget = 4096, schedule(k_unroll = 16)");
+        assert_eq!(a.budget.map(|t| t.to_string()), Some("4096".into()));
+        assert_eq!(a.k_unroll.map(|t| t.to_string()), Some("16".into()));
+    }
+
+    #[test]
+    fn parse_empty_args() {
+        let a = attrs("");
+        assert!(a.budget.is_none());
+        assert!(a.k_unroll.is_none());
+    }
+
+    #[test]
+    fn parse_flat_k_unroll_without_schedule_wrapper() {
+        let a = attrs("k_unroll = 4");
+        assert!(a.budget.is_none());
+        assert_eq!(a.k_unroll.map(|t| t.to_string()), Some("4".into()));
     }
 
     /// Extract the binding pattern from a parsed `fn` arg (`syn::Pat` has no

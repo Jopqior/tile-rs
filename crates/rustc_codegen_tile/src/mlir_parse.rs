@@ -91,6 +91,11 @@ pub struct MlirFunc {
     /// backends emit a static capacity guard (F1) into the generated kernel so the
     /// budget guarantee reaches the DEPLOYED code, not just the typed source.
     pub budget: Option<u32>,
+    /// K-loop unroll factor from a `tile.k_unroll = <N>` function attribute
+    /// (emitted by `#[tile_kernel(schedule(k_unroll=..))]`). `None` = the
+    /// backend's receipted default. Only honored where
+    /// `emit_unrolled_k_accumulation` preserves sum order (same arithmetic).
+    pub k_unroll: Option<u32>,
 }
 
 pub struct FuncArg {
@@ -127,6 +132,19 @@ fn parse_budget_attr(line: &str) -> Option<u32> {
     digits.parse::<u32>().ok()
 }
 
+/// Extract `tile.k_unroll = <N>` from a function-attribute line (pretty or
+/// generic), same shape as [`parse_budget_attr`].
+fn parse_k_unroll_attr(line: &str) -> Option<u32> {
+    let pos = line.find("tile.k_unroll")?;
+    let after_eq = line[pos + "tile.k_unroll".len()..].split('=').nth(1)?;
+    let digits: String = after_eq
+        .trim()
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse::<u32>().ok()
+}
+
 pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
     let mut functions = Vec::new();
     let mut globals = Vec::new();
@@ -136,8 +154,9 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
     while i < lines.len() {
         let line = lines[i].trim();
 
-        // Match global: llvm.mlir.global ... @name(...) ... { ... }
-        if line.contains("llvm.mlir.global") && line.contains("@") {
+        // Match global: pretty `llvm.mlir.global ... @name...` or generic
+        // `"llvm.mlir.global"() <{..., sym_name = "name", ...}> ({ ... })`.
+        if line.contains("llvm.mlir.global") {
             if let Some(g) = parse_global_decl(line) {
                 globals.push(g);
             }
@@ -149,6 +168,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
             let args = extract_func_args(line);
             let is_entry = line.contains("hacc.entry");
             let budget = parse_budget_attr(line);
+            let k_unroll = parse_k_unroll_attr(line);
 
             // Collect function body by tracking brace nesting
             let mut body_lines = Vec::new();
@@ -173,6 +193,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                 is_entry,
                 body_lines,
                 budget,
+                k_unroll,
             });
         // Match function in MLIR generic format:
         //   "llvm.func"() <{sym_name = "name", function_type = ..., ...}> ({
@@ -187,6 +208,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
             let mut body_lines = Vec::new();
             let mut is_entry = false;
             let mut budget: Option<u32> = None;
+            let mut k_unroll: Option<u32> = None;
             let mut bb_args = Vec::new();
 
             // Track parenthesized region nesting: the region starts with ({
@@ -203,6 +225,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                     // This is the closing line: }) {hacc.entry, ...} : () -> ()
                     is_entry = body_line.contains("hacc.entry");
                     budget = parse_budget_attr(body_line);
+                    k_unroll = parse_k_unroll_attr(body_line);
                 } else if body_line.starts_with("^bb0(") || body_line.starts_with("^bb0:") {
                     // Extract args from ^bb0(%arg0: !llvm.ptr<1>, ...)
                     bb_args = extract_bb_args(body_line);
@@ -226,6 +249,7 @@ pub fn parse_module(mlir_text: &str) -> Result<MlirModule, String> {
                     is_entry,
                     body_lines,
                     budget,
+                    k_unroll,
                 });
             }
         } else {
@@ -1205,15 +1229,21 @@ pub fn extract_arrow_result_type(line: &str) -> String {
 }
 
 /// Parse a single `llvm.mlir.global` line into an MlirGlobal.
-/// Examples:
-///   llvm.mlir.global constant @MAGIC {value = 42 : i32, ...}
-///   llvm.mlir.global constant @TABLE {value = dense<[10, 20, 30]> : tensor<3xi32>, ...}
+/// Pretty: `llvm.mlir.global constant @MAGIC {value = 42 : i32, ...}`
+/// Generic: `"llvm.mlir.global"() <{global_type = ..., sym_name = "foo", ...}> ({...})`
 pub fn parse_global_decl(line: &str) -> Option<MlirGlobal> {
-    // Extract symbol name: @name
-    let at_pos = line.find('@')?;
-    let rest = &line[at_pos + 1..];
-    let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')?;
-    let name = rest[..end].to_string();
+    // Prefer generic `sym_name = "..."`; fall back to pretty `@name`.
+    let name = if let Some(n) = extract_generic_sym_name(line) {
+        n
+    } else {
+        let at_pos = line.find('@')?;
+        let rest = &line[at_pos + 1..];
+        let end = rest.find(|c: char| !c.is_alphanumeric() && c != '_' && c != '.')?;
+        rest[..end].to_string()
+    };
+    if name.is_empty() {
+        return None;
+    }
 
     // Extract type from global_type attribute or from value attribute
     let mut ty = String::new();
@@ -1276,11 +1306,17 @@ pub fn parse_global_decl(line: &str) -> Option<MlirGlobal> {
     // If we couldn't determine the type from value, try global_type attribute
     if ty.is_empty() {
         if let Some(gt_pos) = line.find("global_type = ") {
-            let gt_rest = &line[gt_pos + 14..];
-            let gt_end = gt_rest
-                .find(|c: char| c == ',' || c == '}')
-                .unwrap_or(gt_rest.len());
-            ty = gt_rest[..gt_end].trim().to_string();
+            ty = extract_balanced_type(&line[gt_pos + 14..]);
+        }
+    }
+
+    // Struct-wrapped arrays (`!llvm.struct<packed (array<N x T>)>` or with a
+    // leading ptr) carry no `value =` in generic form; derive count/elem so
+    // emit_cpp_globals can emit a sized zero-init array for `&sym` addressof.
+    if count.is_none() && (value.is_none() || ty.starts_with("!llvm.struct")) {
+        if let Some((c, e)) = struct_array_layout(&ty) {
+            count = Some(c);
+            elem_type = Some(e);
         }
     }
 
@@ -1291,6 +1327,88 @@ pub fn parse_global_decl(line: &str) -> Option<MlirGlobal> {
         elem_type,
         count,
     })
+}
+
+/// Extract a type token starting at `s`, balancing `<`/`>` so commas inside
+/// `!llvm.struct<packed (ptr<1>, array<16 x i8>)>` are not treated as terminators.
+fn extract_balanced_type(s: &str) -> String {
+    let mut depth = 0i32;
+    for (i, c) in s.char_indices() {
+        match c {
+            '<' => depth += 1,
+            '>' => {
+                depth -= 1;
+                if depth <= 0 {
+                    return s[..=i].trim().to_string();
+                }
+            }
+            ',' if depth <= 0 => {
+                return s[..i].trim().to_string();
+            }
+            _ => {}
+        }
+    }
+    s.trim().trim_end_matches('}').trim().to_string()
+}
+
+/// Byte count + element type for a (possibly struct-wrapped) global type.
+/// Returns `(bytes_as_count, "i8")` when the payload is address-only.
+fn struct_array_layout(ty: &str) -> Option<(usize, String)> {
+    // Direct array: !llvm.array<N x T>
+    if let Some(inner) = ty
+        .strip_prefix("!llvm.array<")
+        .and_then(|s| s.strip_suffix('>'))
+    {
+        if let Some(x) = inner.find(" x ") {
+            let n: usize = inner[..x].trim().parse().ok()?;
+            return Some((n, inner[x + 3..].trim().to_string()));
+        }
+        return None;
+    }
+    if !ty.starts_with("!llvm.struct") {
+        return None;
+    }
+    // Find innermost `array<N x T>` and optional `ptr<...>` for layout size.
+    let mut bytes = 0usize;
+    let mut arr_count = 0usize;
+    let mut elem = None;
+    let mut rest = ty;
+    while let Some(a) = rest.find("array<") {
+        let after = &rest[a + 6..];
+        let end = after.find('>')?;
+        let inner = &after[..end];
+        if let Some(x) = inner.find(" x ") {
+            let n: usize = inner[..x].trim().parse().ok()?;
+            let e = inner[x + 3..].trim().to_string();
+            let ebytes = match e.as_str() {
+                "i8" | "i1" => 1,
+                "i16" | "f16" | "bf16" => 2,
+                "i32" | "f32" => 4,
+                "f64" | "i64" => 8,
+                _ => 1,
+            };
+            bytes += n * ebytes;
+            arr_count = n;
+            if elem.is_none() {
+                elem = Some(e);
+            }
+        }
+        rest = &after[end + 1..];
+    }
+    let has_ptr = ty.contains("ptr<");
+    if has_ptr {
+        // Opaque (ptr, array) payload: expose as a byte blob for `&sym`.
+        bytes += 8;
+        if bytes == 0 {
+            return None;
+        }
+        return Some((bytes, "i8".to_string()));
+    }
+    let elem = elem?;
+    if arr_count == 0 {
+        return None;
+    }
+    Some((arr_count, elem))
 }
 
 /// Keep the old API for backward compatibility (used by tests etc.)
@@ -1415,10 +1533,16 @@ pub fn parse_const_arg(s: &str) -> u32 {
     if let Ok(n) = s.parse::<u32>() {
         return n;
     }
+    // `%c256` is MLIR's convention for a NAMED constant whose value is in the name, so
+    // reading it is sound. A bare `%42` is SSA value number 42 and carries no value at all
+    // -- reading it as an extent invents a plausible nonzero from a name, which is the
+    // stand-in hazard: `validate_tile_shape`'s C0 cannot catch it because 42 is positive,
+    // and the emitted kernel computes a wrong-sized corner of the right answer.
+    // Unresolvable means 0.
     let digits_start = if let Some(rest) = s.strip_prefix("%c") {
         rest
-    } else if let Some(rest) = s.strip_prefix('%') {
-        rest
+    } else if s.starts_with('%') {
+        ""
     } else {
         s
     };
@@ -1574,9 +1698,40 @@ mod parse_tests {
     fn parse_const_arg_decimal_and_named() {
         assert_eq!(parse_const_arg("1024"), 1024);
         assert_eq!(parse_const_arg("%c256"), 256);
-        assert_eq!(parse_const_arg("%42"), 42);
+        // `%42` is SSA value 42, not the number 42 -- see the invariant test below.
+        assert_eq!(parse_const_arg("%42"), 0);
         assert_eq!(parse_const_arg("%arg0"), 0); // no leading digits
         assert_eq!(parse_const_arg("   7  "), 7);
+    }
+
+    /// INVARIANT (codegen rule 1): an extent that cannot be resolved reads as 0, never as a
+    /// plausible nonzero invented from a name.
+    ///
+    /// `%c256` is MLIR's convention for a named constant carrying its value, so reading it is
+    /// sound. Everything else that merely *contains* digits is not a value: `%42` is SSA
+    /// number 42, `%arg3` is argument 3. Inventing an extent from those is the stand-in
+    /// hazard -- a neighbouring fork seeded unresolved matmul extents with block constants
+    /// and emitted a valid module computing one fixed corner of the output, its own budget
+    /// guard passing because the stand-in tile genuinely fit. A zero is caught by C0; a
+    /// plausible positive is not.
+    ///
+    /// A property test over FORMS rather than a list of cases, because the failure mode is a
+    /// form nobody thought to enumerate.
+    #[test]
+    fn an_unresolvable_extent_reads_as_zero_and_never_as_an_invented_value() {
+        // Sound: the value is genuinely in the token.
+        assert_eq!(parse_const_arg("1024"), 1024);
+        assert_eq!(parse_const_arg("%c256"), 256);
+        assert_eq!(parse_const_arg("  7 "), 7);
+
+        // Not values. Each carries digits that mean something else.
+        for form in ["%42", "%0", "%arg3", "%kk", "%nn", "%12_tmp", "%v7"] {
+            assert_eq!(
+                parse_const_arg(form), 0,
+                "{form} carries no extent; reading digits out of it invents a stand-in that \
+                 C0 cannot catch because it is positive"
+            );
+        }
     }
 
     #[test]
@@ -1624,6 +1779,46 @@ module {
         assert!(f.is_entry, "hacc.entry must mark the function as an entry");
         assert_eq!(f.args.len(), 2);
         assert!(f.args[0].is_gm);
+        assert!(f.k_unroll.is_none(), "absent schedule must stay None");
+    }
+
+    #[test]
+    fn parse_k_unroll_from_pretty_attributes() {
+        let mlir = r#"
+module {
+  llvm.func @k(%arg0: !llvm.ptr<1>) attributes {hacc.entry, tile.k_unroll = 8 : i32} {
+    llvm.return
+  }
+}
+"#;
+        let m = parse_module(mlir).expect("parse ok");
+        assert_eq!(m.functions[0].k_unroll, Some(8));
+    }
+
+    #[test]
+    fn parse_k_unroll_from_generic_closing_line() {
+        let mlir = r#"
+module {
+  "llvm.func"() <{sym_name = "k", function_type = !llvm.func<void ()>}> ({
+  ^bb0:
+    llvm.return
+  }) {hacc.entry, tile.k_unroll = 32 : i32} : () -> ()
+}
+"#;
+        let m = parse_module(mlir).expect("parse ok");
+        assert_eq!(m.functions.len(), 1);
+        assert_eq!(m.functions[0].k_unroll, Some(32));
+    }
+
+    #[test]
+    fn parse_k_unroll_attr_rejects_non_numeric() {
+        assert_eq!(parse_k_unroll_attr("tile.k_unroll = abc"), None);
+        assert_eq!(parse_k_unroll_attr("tile.k_unroll ="), None);
+        assert_eq!(parse_k_unroll_attr("no attr"), None);
+        assert_eq!(
+            parse_k_unroll_attr("tile.k_unroll = 16 : i32"),
+            Some(16)
+        );
     }
 
     #[test]
