@@ -12,12 +12,13 @@ jobs:
   frontend:
     runs-on: macos-14 # Apple silicon; the v0.0.2 backend is released only for aarch64-apple-darwin
     timeout-minutes: 45
-    env:
-      PROBE_DIR: ${{ runner.temp }}/rust-pto-frontend
-      TILE_HOME: ${{ runner.temp }}/tile-home
-      TILE_STD_PATH: ${{ github.workspace }}/crates/tile_std
     steps:
       - uses: actions/checkout@v5
+      - name: Set isolated paths for this runner
+        run: |
+          echo "PROBE_DIR=$RUNNER_TEMP/rust-pto-frontend" >> "$GITHUB_ENV"
+          echo "TILE_HOME=$RUNNER_TEMP/tile-home" >> "$GITHUB_ENV"
+          echo "TILE_STD_PATH=$GITHUB_WORKSPACE/crates/tile_std" >> "$GITHUB_ENV"
       - name: Install exact backend-compatible nightly
         run: |
           rustup toolchain install nightly-2025-08-04 --profile minimal --component rustc-dev --component llvm-tools --component rust-src
