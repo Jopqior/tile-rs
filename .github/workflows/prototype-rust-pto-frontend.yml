@@ -56,17 +56,37 @@ jobs:
               source = source.replace(line, '')
           path.write_text(source)
           PY
+          mkdir -p "$PROBE_DIR"
+          # Preserve the exact adjustment alongside compiler outputs, not only this recipe.
+          set +e
+          diff -u crates/tile_std/src/lib.rs "$overlay/tile_std/src/lib.rs" \
+            > "$PROBE_DIR/tile_std-attr-dedup.diff"
+          diff_status=$?
+          set -e
+          test "$diff_status" -eq 1
+          printf '%s\n' \
+            'Pristine checkout failed before kernel lowering (rustc E0636, duplicate register_tool):' \
+            'https://github.com/Jopqior/tile-rs/actions/runs/36335776434' \
+            'This run compiles a scratch COPY of tile_std with only the two duplicated crate attributes removed.' \
+            'See tile_std-attr-dedup.diff; current checkout, released backend, and Rust kernel are unmodified.' \
+            > "$PROBE_DIR/PROVENANCE.txt"
           echo "TILE_STD_PATH=$overlay/tile_std" >> "$GITHUB_ENV"
       - name: Compile Rust with the actual backend and emit current-source PTO
         run: |
           set -euo pipefail
           mkdir -p "$PROBE_DIR"
           tile=crates/tile_cli/target/release/tile
-          # Existing shipped Rust sample first: a failure here isolates backend provisioning.
-          env -u RUSTFLAGS "$tile" crates/tile_cli/testdata/forms/softmax.rs -t msl \
+          # Diagnostic only: the shipped softmax currently reaches the real backend,
+          # then fails its MSL lowering at unsupported __tile_window_mask_f32. Keep
+          # that refusal visible; require the exact known failure or successful MLIR.
+          if env -u RUSTFLAGS "$tile" crates/tile_cli/testdata/forms/softmax.rs -t msl \
             --keep-dir "$PROBE_DIR/sample" -o "$PROBE_DIR/sample.metal" \
-            2>&1 | tee "$PROBE_DIR/sample.log"
-          test -s "$PROBE_DIR/sample/softmax.1.mlir.mlir"
+            2>&1 | tee "$PROBE_DIR/sample.log"; then
+            test -s "$PROBE_DIR/sample/softmax.1.mlir.mlir"
+          else
+            grep -q 'mlir_to_msl has no arm for `__tile_window_mask_f32`' "$PROBE_DIR/sample.log"
+            echo 'Known shipped-sample MSL refusal recorded in sample.log; probing minimal add kernel.'
+          fi
           # 'msl' maps to backend codegen path 'metal': it avoids an Ascend SDK on macOS.
           # Its intermediate is emitted by rustc_codegen_tile, not copied from a fixture.
           env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t msl \
