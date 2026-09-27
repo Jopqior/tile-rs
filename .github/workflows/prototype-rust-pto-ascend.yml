@@ -1,0 +1,112 @@
+# THROWAWAY: current Rust input -> current PTO emitter -> camodel, optional NPU.
+name: Prototype Rust PTO Ascend
+on:
+  push:
+    branches: [prototype/rust-pto-ascend-ci]
+    paths:
+      - '.github/workflows/prototype-rust-pto-ascend.yml'
+      - 'prototypes/rust-pto-ascend/device/**'
+  workflow_dispatch:
+    inputs:
+      run_npu:
+        description: Run on an authorized, registered Ascend910B runner
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  frontend:
+    uses: ./.github/workflows/prototype-rust-pto-frontend.yml
+  simulator:
+    needs: frontend
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      EXECUTION_MODE: sim
+      ASCEND_DEVICE_ID: '0'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: rust-pto-frontend-macOS-${{ github.sha }}
+          path: frontend
+      - name: Check frontend artifacts and set isolated directories
+        run: |
+          (cd frontend && sha256sum -c SHA256SUMS)
+          echo "BUILD_DIR=$RUNNER_TEMP/rust-pto-sim" >> "$GITHUB_ENV"
+          echo "INSTALL_ROOT=$RUNNER_TEMP/ascend-prototype" >> "$GITHUB_ENV"
+          echo "CANN_ENV=$RUNNER_TEMP/ascend-prototype/cann/set_env.sh" >> "$GITHUB_ENV"
+          echo "PTO_INPUT=$GITHUB_WORKSPACE/frontend/add_generated.pto.mlir" >> "$GITHUB_ENV"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends gcc g++ make python3 python3-dev python3-pip python3-venv curl ca-certificates git libnuma1 libgomp1 libglib2.0-0 binutils
+      - name: Install pinned CANN Toolkit without driver
+        run: bash prototypes/rust-pto-ascend/device/install-camodel.sh
+      - name: Compile Rust-derived PTO and compare simulator output
+        run: bash prototypes/rust-pto-ascend/device/run.sh
+      - name: Hash generated C++ for the optional physical-device job
+        run: cd "$BUILD_DIR" && sha256sum generated.cpp > generated.sha256
+      - name: Preserve owned artifacts and diagnostic logs, not the SDK
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-pto-device-input
+          path: |
+            ${{ runner.temp }}/rust-pto-sim/generated.cpp
+            ${{ runner.temp }}/rust-pto-sim/generated.sha256
+            ${{ runner.temp }}/rust-pto-sim/input.pto
+            ${{ runner.temp }}/rust-pto-sim/inventory.txt
+            ${{ runner.temp }}/rust-pto-sim/ptoas.log
+            ${{ runner.temp }}/rust-pto-sim/compile.log
+            ${{ runner.temp }}/rust-pto-sim/link.log
+            ${{ runner.temp }}/rust-pto-sim/result.txt
+            ${{ runner.temp }}/rust-pto-sim/inputs.txt
+            ${{ runner.temp }}/rust-pto-sim/outputs.txt
+          if-no-files-found: warn
+          retention-days: 14
+  npu:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_npu }}
+    needs: simulator
+    runs-on: [self-hosted, linux, ascend-910b]
+    timeout-minutes: 30
+    concurrency:
+      group: ascend-910b-device
+      cancel-in-progress: false
+    env:
+      EXECUTION_MODE: npu
+      CANN_ENV: ${{ vars.ASCEND_CANN_ENV }}
+      ASCEND_DEVICE_ID: ${{ vars.ASCEND_DEVICE_ID }}
+      ASCEND_SOC: ${{ vars.ASCEND_SOC }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: rust-pto-device-input
+          path: device-input
+      - name: Check the same generated source and set isolated paths
+        run: |
+          (cd device-input && sha256sum -c generated.sha256)
+          echo "BUILD_DIR=$RUNNER_TEMP/rust-pto-npu-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+          echo "GENERATED_CPP=$GITHUB_WORKSPACE/device-input/generated.cpp" >> "$GITHUB_ENV"
+      - name: Compile for the NPU and compare actual device output
+        run: bash prototypes/rust-pto-ascend/device/run.sh
+      - name: Preserve device evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-pto-npu
+          path: |
+            ${{ env.BUILD_DIR }}/inventory.txt
+            ${{ env.BUILD_DIR }}/device.txt
+            ${{ env.BUILD_DIR }}/compile.log
+            ${{ env.BUILD_DIR }}/link.log
+            ${{ env.BUILD_DIR }}/result.txt
+            ${{ env.BUILD_DIR }}/inputs.txt
+            ${{ env.BUILD_DIR }}/outputs.txt
+          if-no-files-found: warn
+          retention-days: 14
