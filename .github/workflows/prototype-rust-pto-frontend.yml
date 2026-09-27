@@ -83,6 +83,32 @@ jobs:
             2>&1 | tee "$PROBE_DIR/pto.log"
           test -s "$PROBE_DIR/add_generated.pto.mlir"
           grep -q '__tile_add_f32' "$PROBE_DIR/add_generated.mlir"
+          # Success is not enough: the previous GmView build emitted pto.make_tensor_view
+          # from undefined wrapper temporaries while still exiting zero. Check ABI,
+          # operation counts and every non-comment SSA reference before upload/use.
+          python3 - "$PROBE_DIR/add_generated.pto.mlir" <<'PY'
+          import pathlib
+          import re
+          import sys
+          source = pathlib.Path(sys.argv[1]).read_text()
+          func = re.search(r'func\.func @add_generated\(([^)]*)\)', source)
+          assert func, 'missing add_generated PTO function'
+          args = re.findall(r'(%arg\d+): !pto\.ptr<f32>', func.group(1))
+          assert len(args) == 3, f'expected three ordered f32 pointers, got {args}'
+          for arg in args:
+              assert re.search(r'pto\.make_tensor_view ' + re.escape(arg) + r'\b', source), (
+                  f'PTO does not make a tensor view from input pointer {arg}'
+              )
+          active = '\n'.join(line for line in source.splitlines()
+                             if not line.lstrip().startswith('//'))
+          definitions = set(args) | set(re.findall(r'(%[A-Za-z_]\w*)\s*=', active))
+          missing = set(re.findall(r'%[A-Za-z_]\w*', active)) - definitions
+          assert not missing, f'undefined PTO SSA operands: {sorted(missing)}'
+          for operation, expected in [('pto.tload', 2), ('pto.tadd', 1), ('pto.tstore', 1)]:
+              got = len(re.findall(r'\b' + operation + r'\b', active))
+              assert got == expected, f'{operation}: expected {expected}, got {got}'
+          print('PTO ABI and SSA verified: add_generated(a, b, out), f32[1,256] load/load/add/store')
+          PY
           (cd "$PROBE_DIR" && shasum -a 256 add_generated.mlir add_generated.pto.mlir \
             | tee SHA256SUMS)
           printf 'Backend: v0.0.2+nightly-2025-08-04 (verified by tile install)\n'
