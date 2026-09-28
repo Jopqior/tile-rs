@@ -15,7 +15,11 @@ class RunnerTests(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.root = Path(tmp.name)
+        # Exercise macOS-style symlinked temp paths on every platform.
+        storage = Path(tmp.name) / "storage"
+        storage.mkdir()
+        self.root = Path(tmp.name) / "alias"
+        self.root.symlink_to(storage, target_is_directory=True)
         self.cases = self.root / "cases"
         self.cases.mkdir()
         self.sdk = self.root / "sdk"
@@ -63,8 +67,9 @@ class RunnerTests(unittest.TestCase):
         self.assertIn(frontend.BACKEND_RELEASE, provenance)
         for name in fixture_names():
             with self.subTest(case=name):
-                dest = self.output / "cases" / name
-                source = self.cases / name / f"{name}.rs"
+                # run_suite canonicalizes paths before invoking the CLI or recording provenance.
+                dest = (self.output / "cases" / name).resolve()
+                source = (self.cases / name / f"{name}.rs").resolve()
                 mlir = dest / f"{name}.mlir"
                 pto = dest / f"{name}.pto.mlir"
                 original = FIXTURES / name
@@ -90,7 +95,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(second["input_sha256"], hashlib.sha256(mlir.read_bytes()).hexdigest())
                 for call in (first, second):
                     self.assertIsNone(call["rustflags"])
-                    self.assertEqual(call["tile_std_path"], str(self.sdk / "crates/tile_std"))
+                    self.assertEqual(call["tile_std_path"], str((self.sdk / "crates/tile_std").resolve()))
 
     def test_failed_first_case_does_not_stop_later_cases_and_clears_stale_files(self):
         self.add_cases()
