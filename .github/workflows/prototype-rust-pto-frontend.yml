@@ -5,6 +5,7 @@ on:
     branches: [prototype/61-rust-pto-ascend-ci]
     paths:
       - 'prototypes/rust-pto-ascend/frontend/**'
+      - 'prototypes/rust-pto-ascend/cases/**'
       - '.github/workflows/prototype-rust-pto-frontend.yml'
   workflow_dispatch:
   workflow_call:

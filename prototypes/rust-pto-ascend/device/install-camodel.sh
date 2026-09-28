@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# THROWAWAY: authorized full Toolkit install, no driver/firmware.
+# Install the pinned CANN Toolkit for simulation, without driver or firmware.
 # On a developer machine run ONLY inside a disposable Ubuntu 22.04 container.
 set -euo pipefail
 : "${BUILD_DIR:?Set an isolated absolute BUILD_DIR}"
 : "${INSTALL_ROOT:?Set an isolated absolute INSTALL_ROOT}"
+[[ $BUILD_DIR == /* && $INSTALL_ROOT == /* ]] || { echo 'Build and install paths must be absolute' >&2; exit 2; }
 mkdir -p "$BUILD_DIR" "$INSTALL_ROOT"
 sha=985b8c7b68a5f85af7c28c3514f3d3f6baec1e0784669f2bba0cce2b502dabe9
 url='https://ascend-cann-open.obs.cn-north-4.myhuaweicloud.com/CANN/CANN%209.1.0/Ascend-cann-toolkit_9.1.0_linux-x86_64.run'

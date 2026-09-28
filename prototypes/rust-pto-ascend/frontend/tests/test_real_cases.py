@@ -13,7 +13,9 @@ from support import frontend
 
 class RealCaseContractTests(unittest.TestCase):
     def test_every_discovered_case_has_valid_config_and_nonempty_source(self):
-        cases = frontend.discover_cases(frontend.CASES)
+        shared_cases = frontend.ROOT / "prototypes/rust-pto-ascend/cases"
+        self.assertEqual(frontend.CASES, shared_cases)
+        cases = frontend.discover_cases(shared_cases)
         self.assertTrue(cases)
         for case in cases:
             with self.subTest(case=case.name):

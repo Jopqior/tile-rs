@@ -1,4 +1,4 @@
-// THROWAWAY: fixed 1x256 Rust add ABI, shared between camodel and NPU.
+// Host for the 1x256 Rust add case, shared between camodel and NPU.
 #include <acl/acl.h>
 #include <dlfcn.h>
 #include <array>
@@ -8,9 +8,17 @@
 #include <iostream>
 #include <limits>
 #include <string>
+
 extern "C" void launch_add(float*, float*, float*, void*);
-#define ACL(call) do { const auto rc = (call); if (rc != ACL_SUCCESS) { \
-    std::cerr << "FAIL: " #call " returned " << rc << '\n'; std::exit(3); } } while (0)
+
+#define ACL(call) \
+    do { \
+        const auto rc = (call); \
+        if (rc != ACL_SUCCESS) { \
+            std::cerr << "FAIL: " #call " returned " << rc << '\n'; \
+            std::exit(3); \
+        } \
+    } while (0)
 
 int main(int argc, char** argv) {
     if (argc != 3) return 2;

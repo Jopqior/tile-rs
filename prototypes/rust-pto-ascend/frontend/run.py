@@ -13,7 +13,7 @@ import sys
 import traceback
 
 ROOT = Path(__file__).resolve().parents[3]
-CASES = Path(__file__).resolve().parent / "cases"
+CASES = Path(__file__).resolve().parent.parent / "cases"
 SDK_COMMIT = "c3c8ec0169bd02757b51370ba9c6ec3b116b833d"
 BACKEND_RELEASE = "v0.0.2+nightly-2025-08-04"
 

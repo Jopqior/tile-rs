@@ -58,6 +58,8 @@ class RunnerTests(unittest.TestCase):
 
     def test_two_stages_provenance_isolation_and_actual_digests(self):
         self.add_cases()
+        # Frontend processes every case regardless of optional device coverage.
+        (self.cases / fixture_names()[0] / "device").mkdir()
         self.assertEqual(self.run_suite(), 0)
         invocations = trace(self.trace)
         self.assertEqual([(call["case"], call["stage"]) for call in invocations],

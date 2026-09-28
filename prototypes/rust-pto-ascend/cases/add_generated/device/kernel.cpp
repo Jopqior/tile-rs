@@ -1,4 +1,4 @@
-// THROWAWAY: launch wrapper only. generated.cpp must come from the Rust job.
+// Launch wrapper for the add case. generated.cpp must come from the Rust job.
 #include <cstdint>
 #include <cstddef>
 #include <pto/pto-inst.hpp>
