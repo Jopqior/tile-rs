@@ -1,0 +1,11 @@
+{
+  "function": "add_generated",
+  "pointer_type": "f32",
+  "pointer_count": 3,
+  "mlir_intrinsic": "__tile_add_f32",
+  "operations": {
+    "pto.tload": 2,
+    "pto.tadd": 1,
+    "pto.tstore": 1
+  }
+}

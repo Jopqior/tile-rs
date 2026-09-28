@@ -20,7 +20,7 @@
 
 - `.github/workflows/prototype-rust-pto-ascend.yml`：macOS Rust 前端、Ubuntu camodel，以及手动选择的 NPU job。
 - `.github/workflows/prototype-rust-pto-frontend.yml`：实际 Rust 编译和当前源码 PTO 转换。
-- `prototypes/rust-pto-ascend/frontend/add_generated.rs`：三个指针、1×256 f32 add。
+- `prototypes/rust-pto-ascend/frontend/cases/add_generated/add_generated.rs`：三个指针、1×256 f32 add；前端 suite 在 `frontend/run.py` 中，逐 case 的 PTO 和校验和输出到 `PROBE_DIR/cases/add_generated/`。
 - `prototypes/rust-pto-ascend/device/`：固定 PTOAS/PTO ISA、Bisheng 编译、ACL host、独立 Python 比较器。由 camodel 原型 `4d875e05` 的 host/checker 适配而来。
 
 ```sh

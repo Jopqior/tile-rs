@@ -1,0 +1,7 @@
+{
+  "function": "scatter_i64",
+  "pointer_type": "i64",
+  "pointer_count": 4,
+  "mlir_intrinsic": "__synthetic_scatter_i64",
+  "operations": {"pto.tload": 2, "pto.tmul": 1, "pto.tstore": 1}
+}

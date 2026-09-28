@@ -31,90 +31,23 @@ jobs:
         run: |
           echo "PROBE_DIR=$RUNNER_TEMP/rust-pto-frontend" >> "$GITHUB_ENV"
           echo "TILE_HOME=$RUNNER_TEMP/tile-home" >> "$GITHUB_ENV"
-          echo "TILE_STD_PATH=$GITHUB_WORKSPACE/release-sdk/crates/tile_std" >> "$GITHUB_ENV"
       - name: Install exact backend-compatible nightly
         run: |
           rustup toolchain install nightly-2025-08-04 --profile minimal --component rustc-dev --component llvm-tools --component rust-src
           rustc +nightly-2025-08-04 --version
+      - name: Run lightweight frontend suite tests
+        run: python3 -m unittest discover -s prototypes/rust-pto-ascend/frontend/tests -v
       - name: Build current CLI on stable, install checksum-verified published backend
         run: |
           set -euo pipefail
           test "$(uname -m)" = arm64
           cargo +stable build --locked --release --manifest-path crates/tile_cli/Cargo.toml --bin tile
           crates/tile_cli/target/release/tile install rustc_codegen_tile
-      - name: Assert release source provenance (no edited DSL or private binary)
+      - name: Run Rust frontend suite
         run: |
-          set -euo pipefail
-          test "$(git -C release-sdk rev-parse HEAD)" = c3c8ec0169bd02757b51370ba9c6ec3b116b833d
-          test -f "$TILE_STD_PATH/Cargo.toml"
-          test -f release-sdk/crates/tile_std_macros/Cargo.toml
-          if grep -qE 'register_tool|__tile_window_mask_f32' \
-              "$TILE_STD_PATH/src/lib.rs" "$TILE_STD_PATH/src/tile.rs"; then
-            echo 'Release DSL unexpectedly contains an incompatible attribute or intrinsic' >&2
-            exit 1
-          fi
-          mkdir -p "$PROBE_DIR"
-          printf '%s\n' \
-            'Rust source: current checkout prototypes/rust-pto-ascend/frontend/add_generated.rs' \
-            'Rust frontend tile_std + tile_std_macros: unmodified yijunyu/tile-rs commit c3c8ec0169bd02757b51370ba9c6ec3b116b833d (release v0.0.2+nightly-2025-08-04).' \
-            'Codegen backend: v0.0.2+nightly-2025-08-04, installed with verified current CLI manifest SHA256.' \
-            'Compiler: nightly-2025-08-04. PTO emitter: current checkout tile CLI and mlir_to_pto.rs.' \
-            'Metal is used only to save compiler MLIR; native PTO requires ASCEND_HOME_PATH on macOS.' \
-            'Prior current-DSL failures: https://github.com/Jopqior/tile-rs/actions/runs/36335776434 and https://github.com/Jopqior/tile-rs/actions/runs/36336155872' \
-            > "$PROBE_DIR/PROVENANCE.txt"
-      - name: Compile Rust with the actual backend and emit current-source PTO
-        run: |
-          set -euo pipefail
-          mkdir -p "$PROBE_DIR"
-          tile=crates/tile_cli/target/release/tile
-          # Choose Metal only to capture the compiler's neutral MLIR intermediate;
-          # the PTO backend instead requires ASCEND_HOME_PATH on macOS (36336323316).
-          # The release-matched DSL has no __tile_window_mask_f32 (which made
-          # the published backend reject the newer DSL, run 36336155872).
-          env -u RUSTFLAGS "$tile" prototypes/rust-pto-ascend/frontend/add_generated.rs -t msl \
-            --keep-dir "$PROBE_DIR/kernel" -o "$PROBE_DIR/add_generated.metal" \
-            2>&1 | tee "$PROBE_DIR/kernel.log"
-          # The default O2 route includes tile -> tile, so MLIR is hop 2, not 1.
-          cp "$PROBE_DIR/kernel/add_generated.2.mlir.mlir" "$PROBE_DIR/add_generated.mlir"
-          test -s "$PROBE_DIR/add_generated.mlir"
-          # Explicit second invocation: force the open, current-source PTO emitter to run,
-          # rather than accepting the proprietary backend's optional target_source.
-          "$tile" "$PROBE_DIR/add_generated.mlir" -t pto -o "$PROBE_DIR/add_generated.pto.mlir" \
-            2>&1 | tee "$PROBE_DIR/pto.log"
-          test -s "$PROBE_DIR/add_generated.pto.mlir"
-          grep -q '__tile_add_f32' "$PROBE_DIR/add_generated.mlir"
-          # Success is not enough: the previous GmView build emitted pto.make_tensor_view
-          # from undefined wrapper temporaries while still exiting zero. Check ABI,
-          # operation counts and every non-comment SSA reference before upload/use.
-          python3 - "$PROBE_DIR/add_generated.pto.mlir" <<'PY'
-          import pathlib
-          import re
-          import sys
-          source = pathlib.Path(sys.argv[1]).read_text()
-          func = re.search(r'func\.func @add_generated\(([^)]*)\)', source)
-          assert func, 'missing add_generated PTO function'
-          args = re.findall(r'(%arg\d+): !pto\.ptr<f32>', func.group(1))
-          assert len(args) == 3, f'expected three ordered f32 pointers, got {args}'
-          for arg in args:
-              assert re.search(r'pto\.make_tensor_view ' + re.escape(arg) + r'\b', source), (
-                  f'PTO does not make a tensor view from input pointer {arg}'
-              )
-          active = '\n'.join(line for line in source.splitlines()
-                             if not line.lstrip().startswith('//'))
-          definitions = set(args) | set(re.findall(r'(%[A-Za-z_]\w*)\s*=', active))
-          missing = set(re.findall(r'%[A-Za-z_]\w*', active)) - definitions
-          assert not missing, f'undefined PTO SSA operands: {sorted(missing)}'
-          for operation, expected in [('pto.tload', 2), ('pto.tadd', 1), ('pto.tstore', 1)]:
-              got = len(re.findall(r'\b' + operation + r'\b', active))
-              assert got == expected, f'{operation}: expected {expected}, got {got}'
-          print('PTO ABI and SSA verified: add_generated(a, b, out), f32[1,256] load/load/add/store')
-          PY
-          (cd "$PROBE_DIR" && shasum -a 256 add_generated.mlir add_generated.pto.mlir \
-            | tee SHA256SUMS)
-          printf 'Backend: v0.0.2+nightly-2025-08-04 (verified by tile install)\n'
-          printf 'MLIR and PTO emitted from %s\n' "$(git rev-parse HEAD)"
-          printf '\nCompiler MLIR:\n'; head -100 "$PROBE_DIR/add_generated.mlir"
-          printf '\nPTO:\n'; head -120 "$PROBE_DIR/add_generated.pto.mlir"
+          python3 prototypes/rust-pto-ascend/frontend/run.py \
+            --tile crates/tile_cli/target/release/tile \
+            --sdk release-sdk --output "$PROBE_DIR"
       - name: Preserve evidence even on failed compilation
         if: always()
         uses: actions/upload-artifact@v4

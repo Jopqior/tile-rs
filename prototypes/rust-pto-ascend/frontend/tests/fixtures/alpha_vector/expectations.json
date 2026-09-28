@@ -1,0 +1,7 @@
+{
+  "function": "blend_tiles",
+  "pointer_type": "f16",
+  "pointer_count": 2,
+  "mlir_intrinsic": "__synthetic_blend_f16",
+  "operations": {"pto.tload": 1, "pto.tstore": 1, "pto.tadd": 0}
+}

@@ -34,11 +34,16 @@ jobs:
           path: frontend
       - name: Check frontend artifacts and set isolated directories
         run: |
-          (cd frontend && sha256sum -c SHA256SUMS)
+          test -s frontend/cases/add_generated/add_generated.pto.mlir
+          test -s frontend/cases/add_generated/add_generated.mlir
+          (cd frontend/cases/add_generated && \
+            grep -q '  add_generated.pto.mlir$' SHA256SUMS && \
+            grep -q '  add_generated.mlir$' SHA256SUMS && \
+            sha256sum -c SHA256SUMS)
           echo "BUILD_DIR=$RUNNER_TEMP/rust-pto-sim" >> "$GITHUB_ENV"
           echo "INSTALL_ROOT=$RUNNER_TEMP/ascend-prototype" >> "$GITHUB_ENV"
           echo "CANN_ENV=$RUNNER_TEMP/ascend-prototype/cann/set_env.sh" >> "$GITHUB_ENV"
-          echo "PTO_INPUT=$GITHUB_WORKSPACE/frontend/add_generated.pto.mlir" >> "$GITHUB_ENV"
+          echo "PTO_INPUT=$GITHUB_WORKSPACE/frontend/cases/add_generated/add_generated.pto.mlir" >> "$GITHUB_ENV"
       - name: Install build dependencies
         run: |
           sudo apt-get update -qq
