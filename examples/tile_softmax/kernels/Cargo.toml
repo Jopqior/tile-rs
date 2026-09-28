@@ -1,0 +1,10 @@
+[package]
+name = "tile_softmax_kernels"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tile_std = { path = "../../../crates/tile_std" }
+
+[lib]
+crate-type = ["cdylib", "lib"]

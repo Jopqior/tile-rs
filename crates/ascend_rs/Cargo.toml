@@ -1,0 +1,27 @@
+[package]
+name = "ascend_rs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["dvpp", "blas", "hccl", "profiler"]
+dvpp = ["ascend_sys/dvpp"]
+blas = ["ascend_sys/blas"]
+hccl = ["ascend_sys/hccl"]
+profiler = ["ascend_sys/profiler"]
+async_op = ["dep:libc"]
+
+[dependencies]
+log = "0.4.26"
+simple_logger = "5.0.0"
+num-traits = "0.2"
+num-derive = "0.3"
+libloading =  "0.8"
+ascend_sys = { path = "../ascend_sys", default-features = false }
+libc = { version = "0.2", optional = true }
+
+[build-dependencies]
+tile_kernel_builder_config = { path = "../tile_kernel_builder_config" }
+
+[dev-dependencies]
+anyhow = "1.0"

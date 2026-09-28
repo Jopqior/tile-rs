@@ -1,0 +1,13 @@
+# derived-from: tests/compiletest/Cargo.toml
+# Public copy of that manifest without the path dependency on the codegen
+# backend crate, which is not published. The backend is found at run time
+# instead: TILERS_CODEGEN_SO, or the prebuilt library on the library path.
+# scripts/check_public_tree.py fails if this copy differs from its origin in
+# any other line.
+[package]
+name = "tests"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+compiletest_rs = "0.11"

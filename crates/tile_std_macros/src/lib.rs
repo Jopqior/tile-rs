@@ -32,8 +32,8 @@ use syn::{
 ///
 /// Mixing is allowed: scalar / non-view params pass through untouched.
 #[proc_macro_attribute]
-pub fn tile_kernel(_input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
-    expand(item)
+pub fn tile_kernel(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
+    expand(input, item)
 }
 
 /// Deprecated alias for [`tile_kernel`], kept so any not-yet-migrated
@@ -42,14 +42,33 @@ pub fn tile_kernel(_input: proc_macro::TokenStream, item: proc_macro::TokenStrea
 #[doc(hidden)]
 #[deprecated(note = "renamed to `tile_kernel`")]
 #[proc_macro_attribute]
-pub fn aiv_kernel(_input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
-    expand(item)
+pub fn aiv_kernel(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
+    expand(input, item)
 }
 
 /// Shared expansion logic for the kernel-entry attribute. Both
 /// [`tile_kernel`] (canonical) and the deprecated [`aiv_kernel`] alias call
 /// into this.
-fn expand(item: proc_macro::TokenStream) -> TokenStream {
+/// Parse an optional `budget = <expr>` from the attribute args. When present, the
+/// kernel declares the per-tile shared-memory / UB budget of its target, and every
+/// GmView/GmViewMut tile footprint is checked against it at COMPILE TIME (F1).
+fn parse_budget(input: proc_macro::TokenStream) -> Option<proc_macro2::TokenStream> {
+    if input.is_empty() {
+        return None;
+    }
+    // Accept `budget = <expr>`; fall back to the bare expr for ergonomics.
+    let input2: proc_macro2::TokenStream = input.into();
+    let s = input2.to_string();
+    let expr_str = if let Some(eq) = s.find('=') {
+        s[eq + 1..].trim().to_string()
+    } else {
+        s.trim().to_string()
+    };
+    expr_str.parse::<proc_macro2::TokenStream>().ok()
+}
+
+fn expand(input: proc_macro::TokenStream, item: proc_macro::TokenStream) -> TokenStream {
+    let budget = parse_budget(input);
     let mut item = parse_macro_input!(item as ItemFn);
 
     // Walk the signature, pulling any GmView / GmViewMut params out.
@@ -105,7 +124,37 @@ fn expand(item: proc_macro::TokenStream) -> TokenStream {
     // of the body. The prelude reads the block index once, mints a ctx, and
     // binds each view using the author's original param name.
     if !view_params.is_empty() {
-        let prelude = build_prelude(&view_params);
+        let mut prelude = build_prelude(&view_params);
+        // F1 capacity guard: if the kernel declared a `budget`, assert each tile's
+        // footprint (ROWS * COLS * size_of::<T>()) fits it AT COMPILE TIME. A tile
+        // that overflows the target's shared/UB budget fails to compile — the same
+        // InBudget check the paper's capacity guard makes, now on the typed source.
+        if let Some(budget_expr) = &budget {
+            let mut guards: Vec<syn::Stmt> = Vec::new();
+            for v in &view_params {
+                let (r, c, t, _name) = (&v.rows, &v.cols, &v.elem, v.orig_name.to_string());
+                // no_core / const-context capacity check: index a len-1 array at
+                // 0 (fits) or 1 (over budget -> out-of-bounds const-eval error). This is
+                // panic-free (no_std kernels forbid the panic path a message-assert emits).
+                // no_core-safe compile-time capacity check: require the trait bound
+                // BudgetCheck<{footprint <= budget}>: BudgetOk. False -> unresolved bound
+                // -> type error, NO panic/unwind path (kernels are no_std/no_core).
+                let guard: syn::Stmt = parse_quote! {
+                    const _: fn() = || {
+                        fn _budget_ok()
+                        where
+                            ::tile_std::BudgetCheck<
+                                { (#r) * (#c) * ::tile_std::core::mem::size_of::<#t>() <= (#budget_expr) }
+                            >: ::tile_std::BudgetOk,
+                        {}
+                    };
+                };
+                guards.push(guard);
+            }
+            // Guards go first so a budget violation is the first error the author sees.
+            guards.extend(prelude);
+            prelude = guards;
+        }
         // Splice the prelude statements to the front of the block.
         let mut new_stmts: Vec<syn::Stmt> = prelude;
         new_stmts.extend(item.block.stmts.drain(..));
@@ -119,6 +168,16 @@ fn expand(item: proc_macro::TokenStream) -> TokenStream {
     item.attrs.push(no_mangle);
     let kernel_attr = parse_quote!(#[tile::kernel]);
     item.attrs.push(kernel_attr);
+
+    // If a budget was declared, also emit a `#[tile::budget(N)]` codegen marker so
+    // the rustc backend stamps `tile.budget = N` onto the MLIR function. That is the
+    // OTHER end of the F1 guard: the emitter then writes a `static_assert` into the
+    // generated kernel. One `budget=` on the source thus (a) rejects over-budget
+    // source (the trait bound above) AND (b) guards the deployed kernel.
+    if let Some(budget_expr) = &budget {
+        let budget_attr: syn::Attribute = parse_quote!(#[tile::budget(#budget_expr)]);
+        item.attrs.push(budget_attr);
+    }
 
     item.into_token_stream().into()
 }

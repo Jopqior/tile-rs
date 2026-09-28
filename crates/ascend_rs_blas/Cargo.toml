@@ -1,0 +1,8 @@
+[package]
+name = "ascend_rs_blas"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ascend_rs = { path = "../ascend_rs" }
+ascend_sys = { path = "../ascend_sys" }

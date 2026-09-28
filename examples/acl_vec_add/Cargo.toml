@@ -1,0 +1,14 @@
+[package]
+name = "acl_vec_add"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0"
+log = "0.4.26"
+simple_logger = "5.0.0"
+ascend_rs = { path = "../../crates/ascend_rs" }
+common = { path = "../common" }
+
+[build-dependencies]
+tile_kernel_builder = { path = "../../crates/tile_kernel_builder" }

@@ -4,6 +4,3 @@ target/
 # OS / editor cruft
 .DS_Store
 *.swp
-
-# Local tooling scratch (not part of the project)
-.claude/

@@ -7,22 +7,19 @@
 //!
 //! ## What lives where
 //!
-//! * **open (this crate)** — the trait, the registry, the shared std-only MLIR
-//!   parser (`mlir_parse`, under the `emitters` feature), and the open reference
-//!   targets (CUDA, Metal, SPIR-V, NKI, AIE, …).
-//! * **closed (the `ascend` feature / ultimately a separate private crate)** —
-//!   the AscendC + PTO targets. They implement [`CodegenTarget`] *exactly* like
-//!   the open ones and join via [`TargetRegistry::register`]; "moving Ascend to
-//!   the same level as the other targets" is therefore a one-line registration,
-//!   not a dispatch rewrite.
+//! * **this crate** — the trait, the registry, the `DebugTarget` reference
+//!   target and, under the `emitters` feature, the Apple Metal (MSL) emitter
+//!   with the std-only MLIR parser it reads.
+//! * **every other backend** — registered by the host that has it, through
+//!   [`TargetRegistry::register`]. The prebuilt codegen backend registers all of
+//!   its targets this way, so they are selectable by the same name.
 //!
 //! ## Build matrix
 //!
-//! | features        | builds where      | contains                                   |
-//! |-----------------|-------------------|--------------------------------------------|
-//! | *(default)*     | anywhere (macOS)  | trait + registry + `DebugTarget`           |
-//! | `emitters`      | LLVM-20 box       | + the 14 open `convert_mlir_to_*` emitters |
-//! | `ascend`        | LLVM-20 box       | + closed AscendC/PTO targets (peers)       |
+//! | features    | builds where     | contains                                |
+//! |-------------|------------------|-----------------------------------------|
+//! | *(default)* | anywhere         | trait + registry + `DebugTarget`        |
+//! | `emitters`  | anywhere         | + the Metal (`msl`) emitter and parser  |
 //!
 //! The default build is what keeps the skeleton verifiable standalone — see the
 //! tests at the bottom of this file.
@@ -40,14 +37,19 @@ pub use targets::{DebugTarget, EmitterTarget};
 // box (the emitters live in the `rustc_codegen_tile` tree).
 #[cfg(feature = "emitters")]
 #[path = "../../rustc_codegen_tile/src/mlir_parse.rs"]
+#[allow(dead_code)]
 pub(crate) mod mlir_parse;
+
+// The open Metal arm. Declared at the crate root because its sources refer to
+// themselves as `crate::mlir_to_msl`.
+#[cfg(feature = "emitters")]
+#[path = "../../rustc_codegen_tile/src/mlir_to_msl.rs"]
+#[allow(dead_code)]
+pub(crate) mod mlir_to_msl;
 
 #[cfg(feature = "emitters")]
 pub(crate) mod emitters;
 
-// Under `ascend`: the CLOSED AscendC + PTO targets (non-open-source).
-#[cfg(feature = "ascend")]
-pub(crate) mod ascend;
 
 #[cfg(test)]
 mod tests {
@@ -56,8 +58,14 @@ mod tests {
     #[test]
     fn registry_is_populated_and_selectable() {
         let r = TargetRegistry::with_builtin();
-        assert!(!r.is_empty(), "registry should have at least the debug target");
-        assert!(r.select("debug").is_some(), "debug target must be registered");
+        assert!(
+            !r.is_empty(),
+            "registry should have at least the debug target"
+        );
+        assert!(
+            r.select("debug").is_some(),
+            "debug target must be registered"
+        );
         assert!(r.select("does-not-exist").is_none());
         assert!(r.names().contains(&"debug"));
     }
@@ -103,7 +111,10 @@ mod tests {
     fn hardware_params_carry_ub_size() {
         // The one asymmetry (AscendC's ub_size) rides on EmitOpts uniformly.
         let opts = EmitOpts {
-            hw: HardwareParams { ub_size: 192 * 1024 },
+            hw: HardwareParams {
+                ub_size: 192 * 1024,
+                ..HardwareParams::default()
+            },
         };
         assert_eq!(opts.hw.ub_size, 192 * 1024);
     }
@@ -121,7 +132,11 @@ mod tests {
             Ok(format!("// CUDA\n{mlir}"))
         }
         let mut r = TargetRegistry::new();
-        r.register(Box::new(targets::EmitterTarget::new("cuda", "cu", fake_convert)));
+        r.register(Box::new(targets::EmitterTarget::new(
+            "cuda",
+            "cu",
+            fake_convert,
+        )));
         let t = r.select("cuda").expect("cuda target registered");
         let out = t.emit("module {}", &EmitOpts::default()).unwrap();
         assert_eq!(out.ext, "cu");

@@ -97,69 +97,212 @@ pub enum TileDtype {
 #[derive(Debug, Clone)]
 pub enum TileOp {
     // Memory
-    Load { rows: u32, cols: u32, dtype: TileDtype },
-    Store { rows: u32, cols: u32, dtype: TileDtype },
+    Load {
+        rows: u32,
+        cols: u32,
+        dtype: TileDtype,
+    },
+    Store {
+        rows: u32,
+        cols: u32,
+        dtype: TileDtype,
+    },
 
     // Element-wise arithmetic
-    Add { rows: u32, cols: u32 },
-    Sub { rows: u32, cols: u32 },
-    Mul { rows: u32, cols: u32 },
-    Div { rows: u32, cols: u32 },
-    Max { rows: u32, cols: u32 },
-    Neg { rows: u32, cols: u32 },
+    Add {
+        rows: u32,
+        cols: u32,
+    },
+    Sub {
+        rows: u32,
+        cols: u32,
+    },
+    Mul {
+        rows: u32,
+        cols: u32,
+    },
+    Div {
+        rows: u32,
+        cols: u32,
+    },
+    Max {
+        rows: u32,
+        cols: u32,
+    },
+    Neg {
+        rows: u32,
+        cols: u32,
+    },
 
     // Element-wise math
-    Exp { rows: u32, cols: u32 },
-    Log { rows: u32, cols: u32 },
-    Rsqrt { rows: u32, cols: u32 },
-    Sigmoid { rows: u32, cols: u32 },
-    Silu { rows: u32, cols: u32 },
+    Exp {
+        rows: u32,
+        cols: u32,
+    },
+    Log {
+        rows: u32,
+        cols: u32,
+    },
+    Rsqrt {
+        rows: u32,
+        cols: u32,
+    },
+    Sigmoid {
+        rows: u32,
+        cols: u32,
+    },
+    Silu {
+        rows: u32,
+        cols: u32,
+    },
 
     // Scalar ops
-    Scale { rows: u32, cols: u32, scalar: f32 },
-    Fill { rows: u32, cols: u32, scalar: f32 },
-    Clamp { rows: u32, cols: u32, lo: f32, hi: f32 },
+    Scale {
+        rows: u32,
+        cols: u32,
+        scalar: f32,
+    },
+    Fill {
+        rows: u32,
+        cols: u32,
+        scalar: f32,
+    },
+    Clamp {
+        rows: u32,
+        cols: u32,
+        lo: f32,
+        hi: f32,
+    },
 
     // Reductions
-    ReduceMax { rows: u32, cols: u32 },
-    ReduceSum { rows: u32, cols: u32 },
-    Softmax { rows: u32, cols: u32 },
-    RmsNorm { rows: u32, cols: u32, eps: f32 },
+    ReduceMax {
+        rows: u32,
+        cols: u32,
+    },
+    ReduceSum {
+        rows: u32,
+        cols: u32,
+    },
+    Softmax {
+        rows: u32,
+        cols: u32,
+    },
+    RmsNorm {
+        rows: u32,
+        cols: u32,
+        eps: f32,
+    },
 
     // Matrix
-    Matmul { m: u32, k: u32, n: u32 },
-    Transpose { rows: u32, cols: u32 },
+    Matmul {
+        m: u32,
+        k: u32,
+        n: u32,
+    },
+    Transpose {
+        rows: u32,
+        cols: u32,
+    },
 
     // Shape
-    Slice { src_rows: u32, src_cols: u32, dst_rows: u32, dst_cols: u32, row_off: u32, col_off: u32 },
-    Concat { rows1: u32, cols1: u32, rows2: u32, cols2: u32 },
+    Slice {
+        src_rows: u32,
+        src_cols: u32,
+        dst_rows: u32,
+        dst_cols: u32,
+        row_off: u32,
+        col_off: u32,
+    },
+    Concat {
+        rows1: u32,
+        cols1: u32,
+        rows2: u32,
+        cols2: u32,
+    },
 
     // Transformer-specific
-    Rope { rows: u32, cols: u32, pos: u32 },
-    CausalMask { rows: u32, cols: u32 },
-    Attention { b: u32, s: u32, d: u32 },
-    Embedding { vocab: u32, dim: u32 },
-    CrossEntropy { batch: u32, classes: u32 },
+    Rope {
+        rows: u32,
+        cols: u32,
+        pos: u32,
+    },
+    CausalMask {
+        rows: u32,
+        cols: u32,
+    },
+    Attention {
+        b: u32,
+        s: u32,
+        d: u32,
+    },
+    Embedding {
+        vocab: u32,
+        dim: u32,
+    },
+    CrossEntropy {
+        batch: u32,
+        classes: u32,
+    },
 
     // Quantization
-    Absmax { rows: u32, cols: u32 },
-    Quantize { rows: u32, cols: u32, scale: f32 },
-    Dequantize { rows: u32, cols: u32, scale: f32 },
+    Absmax {
+        rows: u32,
+        cols: u32,
+    },
+    Quantize {
+        rows: u32,
+        cols: u32,
+        scale: f32,
+    },
+    Dequantize {
+        rows: u32,
+        cols: u32,
+        scale: f32,
+    },
 
     // Type casting
-    CastF32ToF16 { rows: u32, cols: u32 },
-    CastF16ToF32 { rows: u32, cols: u32 },
+    CastF32ToF16 {
+        rows: u32,
+        cols: u32,
+    },
+    CastF16ToF32 {
+        rows: u32,
+        cols: u32,
+    },
 
     // Indexing
-    Scatter { rows: u32, cols: u32 },
-    Gather { rows: u32, cols: u32 },
-    TopK { rows: u32, cols: u32, k: u32 },
+    Scatter {
+        rows: u32,
+        cols: u32,
+    },
+    Gather {
+        rows: u32,
+        cols: u32,
+    },
+    TopK {
+        rows: u32,
+        cols: u32,
+        k: u32,
+    },
 
     // Multi-token prediction / speculative decoding
-    ArgMax { rows: u32, cols: u32 },
-    SampleTopP { rows: u32, cols: u32, temperature: f32, top_p: f32 },
-    DraftVerify { rows: u32, cols: u32 },
-    TokenAccept { rows: u32 },
+    ArgMax {
+        rows: u32,
+        cols: u32,
+    },
+    SampleTopP {
+        rows: u32,
+        cols: u32,
+        temperature: f32,
+        top_p: f32,
+    },
+    DraftVerify {
+        rows: u32,
+        cols: u32,
+    },
+    TokenAccept {
+        rows: u32,
+    },
 }
 
 /// Describes a complete kernel as a sequence of tile operations.
@@ -186,19 +329,29 @@ pub struct TileKernel {
 impl TileKernel {
     /// Check if this kernel uses matrix (cube/GEMM) operations.
     pub fn uses_matmul(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, TileOp::Matmul { .. }))
+        self.ops
+            .iter()
+            .any(|op| matches!(op, TileOp::Matmul { .. }))
     }
 
     /// Check if this kernel uses quantization operations.
     pub fn uses_quantization(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op, TileOp::Quantize { .. } | TileOp::Dequantize { .. } | TileOp::Absmax { .. }))
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                TileOp::Quantize { .. } | TileOp::Dequantize { .. } | TileOp::Absmax { .. }
+            )
+        })
     }
 
     /// Check if this kernel uses speculative decoding operations.
     pub fn uses_speculative_decoding(&self) -> bool {
-        self.ops.iter().any(|op| matches!(op,
-            TileOp::DraftVerify { .. } | TileOp::TokenAccept { .. } | TileOp::SampleTopP { .. }
-        ))
+        self.ops.iter().any(|op| {
+            matches!(
+                op,
+                TileOp::DraftVerify { .. } | TileOp::TokenAccept { .. } | TileOp::SampleTopP { .. }
+            )
+        })
     }
 
     /// Infer the preferred kernel mode from the operations.

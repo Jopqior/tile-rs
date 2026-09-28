@@ -54,7 +54,9 @@ impl DmaPending {
 impl VecBuf {
     /// Get raw UbBuf for interop with existing intrinsics.
     #[inline(always)]
-    pub fn raw(self) -> crate::UbBuf { self.0 }
+    pub fn raw(self) -> crate::UbBuf {
+        self.0
+    }
 }
 
 // =============================================================================
@@ -70,7 +72,10 @@ pub unsafe fn load_f32(gm: *const f32, n: u32) -> DmaPending {
 }
 #[inline(always)]
 pub unsafe fn store_f32(gm: *mut f32, data: VecBuf, n: u32) {
-    unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_f32(gm, data.0, n); }
+    unsafe {
+        crate::__tile_pipe_barrier();
+        crate::__tile_buf_store_f32(gm, data.0, n);
+    }
 }
 
 // -- f16 (pointer is *const u16 / *mut u16 per AscendC convention) --
@@ -82,7 +87,10 @@ pub unsafe fn load_f16(gm: *const u16, n: u32) -> DmaPending {
 }
 #[inline(always)]
 pub unsafe fn store_f16(gm: *mut u16, data: VecBuf, n: u32) {
-    unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_f16(gm, data.0, n); }
+    unsafe {
+        crate::__tile_pipe_barrier();
+        crate::__tile_buf_store_f16(gm, data.0, n);
+    }
 }
 
 // -- bf16 (also *const u16 / *mut u16) --
@@ -94,7 +102,10 @@ pub unsafe fn load_bf16(gm: *const u16, n: u32) -> DmaPending {
 }
 #[inline(always)]
 pub unsafe fn store_bf16(gm: *mut u16, data: VecBuf, n: u32) {
-    unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_bf16(gm, data.0, n); }
+    unsafe {
+        crate::__tile_pipe_barrier();
+        crate::__tile_buf_store_bf16(gm, data.0, n);
+    }
 }
 
 // =============================================================================
@@ -114,34 +125,55 @@ impl Future for DmaFuture {
 }
 
 /// Future for f32 store.
-pub struct StoreFuture { gm: *mut f32, data: VecBuf, n: u32 }
+pub struct StoreFuture {
+    gm: *mut f32,
+    data: VecBuf,
+    n: u32,
+}
 impl Future for StoreFuture {
     type Output = ();
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_f32(self.gm, self.data.0, self.n); }
+        unsafe {
+            crate::__tile_pipe_barrier();
+            crate::__tile_buf_store_f32(self.gm, self.data.0, self.n);
+        }
         Poll::Ready(())
     }
 }
 
 /// Future for f16 store.
-pub struct StoreFutureF16 { gm: *mut u16, data: VecBuf, n: u32 }
+pub struct StoreFutureF16 {
+    gm: *mut u16,
+    data: VecBuf,
+    n: u32,
+}
 impl Future for StoreFutureF16 {
     type Output = ();
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_f16(self.gm, self.data.0, self.n); }
+        unsafe {
+            crate::__tile_pipe_barrier();
+            crate::__tile_buf_store_f16(self.gm, self.data.0, self.n);
+        }
         Poll::Ready(())
     }
 }
 
 /// Future for bf16 store.
-pub struct StoreFutureBf16 { gm: *mut u16, data: VecBuf, n: u32 }
+pub struct StoreFutureBf16 {
+    gm: *mut u16,
+    data: VecBuf,
+    n: u32,
+}
 impl Future for StoreFutureBf16 {
     type Output = ();
     #[inline(always)]
     fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<()> {
-        unsafe { crate::__tile_pipe_barrier(); crate::__tile_buf_store_bf16(self.gm, self.data.0, self.n); }
+        unsafe {
+            crate::__tile_pipe_barrier();
+            crate::__tile_buf_store_bf16(self.gm, self.data.0, self.n);
+        }
         Poll::Ready(())
     }
 }
@@ -151,7 +183,8 @@ impl Future for StoreFutureBf16 {
 #[inline(always)]
 pub unsafe fn load_f32_async(gm: *const f32, n: u32) -> DmaFuture {
     let buf = unsafe { crate::__tile_buf_alloc(n) };
-    unsafe { crate::__tile_buf_load_f32(buf, gm, n) }; DmaFuture(buf)
+    unsafe { crate::__tile_buf_load_f32(buf, gm, n) };
+    DmaFuture(buf)
 }
 #[inline(always)]
 pub unsafe fn store_f32_async(gm: *mut f32, data: VecBuf, n: u32) -> StoreFuture {
@@ -160,7 +193,8 @@ pub unsafe fn store_f32_async(gm: *mut f32, data: VecBuf, n: u32) -> StoreFuture
 #[inline(always)]
 pub unsafe fn load_f16_async(gm: *const u16, n: u32) -> DmaFuture {
     let buf = unsafe { crate::__tile_buf_alloc(n) };
-    unsafe { crate::__tile_buf_load_f16(buf, gm, n) }; DmaFuture(buf)
+    unsafe { crate::__tile_buf_load_f16(buf, gm, n) };
+    DmaFuture(buf)
 }
 #[inline(always)]
 pub unsafe fn store_f16_async(gm: *mut u16, data: VecBuf, n: u32) -> StoreFutureF16 {
@@ -169,7 +203,8 @@ pub unsafe fn store_f16_async(gm: *mut u16, data: VecBuf, n: u32) -> StoreFuture
 #[inline(always)]
 pub unsafe fn load_bf16_async(gm: *const u16, n: u32) -> DmaFuture {
     let buf = unsafe { crate::__tile_buf_alloc(n) };
-    unsafe { crate::__tile_buf_load_bf16(buf, gm, n) }; DmaFuture(buf)
+    unsafe { crate::__tile_buf_load_bf16(buf, gm, n) };
+    DmaFuture(buf)
 }
 #[inline(always)]
 pub unsafe fn store_bf16_async(gm: *mut u16, data: VecBuf, n: u32) -> StoreFutureBf16 {
@@ -215,7 +250,10 @@ pub fn block_on<F: Future>(mut f: F) -> F::Output {
 /// let data_b = data_b.sync();
 /// ```
 #[inline(always)]
-pub unsafe fn join_dma_vec<F>(dma_load: impl FnOnce() -> DmaPending, vec_compute: F) -> (DmaPending, ())
+pub unsafe fn join_dma_vec<F>(
+    dma_load: impl FnOnce() -> DmaPending,
+    vec_compute: F,
+) -> (DmaPending, ())
 where
     F: FnOnce(),
 {
@@ -263,72 +301,240 @@ impl VecBuf {
     }
 
     // -- Unary (f32) --
-    #[inline(always)] pub unsafe fn exp(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_exp_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn abs(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_abs_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn ln(self, src: VecBuf, n: u32) { unsafe { crate::__tile_ln_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn sqrt(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_sqrt_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn rsqrt(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_rsqrt_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn reciprocal(self, src: VecBuf, n: u32) { unsafe { crate::__tile_reciprocal_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn sign(self, src: VecBuf, n: u32) { unsafe { crate::__tile_sign_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn round(self, src: VecBuf, n: u32) { unsafe { crate::__tile_round_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn sq(self, src: VecBuf, n: u32) { unsafe { crate::__tile_sq_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn ceil(self, src: VecBuf, n: u32) { unsafe { crate::__tile_ceil_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn floor(self, src: VecBuf, n: u32) { unsafe { crate::__tile_floor_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn trunc(self, src: VecBuf, n: u32) { unsafe { crate::__tile_trunc_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn sin(self, src: VecBuf, n: u32) { unsafe { crate::__tile_sin_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn cos(self, src: VecBuf, n: u32) { unsafe { crate::__tile_cos_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn atan(self, src: VecBuf, n: u32) { unsafe { crate::__tile_atan_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn erf(self, src: VecBuf, n: u32) { unsafe { crate::__tile_erf_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn erfinv(self, src: VecBuf, n: u32) { unsafe { crate::__tile_erfinv_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn fast_gelu(self, src: VecBuf, n: u32) { unsafe { crate::__tile_fast_gelu_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn not(self, src: VecBuf, n: u32) { unsafe { crate::__tile_not_f32(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn softplus(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_softplus_f32(self.0, src.0, n) } }
+    #[inline(always)]
+    pub unsafe fn exp(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_exp_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn abs(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_abs_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn ln(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_ln_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sqrt(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_sqrt_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn rsqrt(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_rsqrt_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn reciprocal(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_reciprocal_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sign(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_sign_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn round(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_round_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sq(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_sq_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn ceil(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_ceil_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn floor(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_floor_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn trunc(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_trunc_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sin(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_sin_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn cos(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_cos_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn atan(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_atan_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn erf(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_erf_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn erfinv(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_erfinv_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn fast_gelu(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_fast_gelu_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn not(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_not_f32(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn softplus(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_softplus_f32(self.0, src.0, n) }
+    }
 
     // -- Scalar (f32) --
-    #[inline(always)] pub unsafe fn adds(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_adds_f32(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn muls(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_muls_f32(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn maxs(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_maxs_f32(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn mins(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_mins_f32(self.0, src.0, s, n) } }
+    #[inline(always)]
+    pub unsafe fn adds(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_adds_f32(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn muls(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_muls_f32(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn maxs(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_maxs_f32(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn mins(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_mins_f32(self.0, src.0, s, n) }
+    }
 
     // -- Binary (f32) --
-    #[inline(always)] pub unsafe fn add(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_add_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn sub(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_sub_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn mul(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_mul_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn div(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_div_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn max(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_max_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn min(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_min_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn and(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_and_f32(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn or(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_or_f32(self.0, a.0, b.0, n) } }
+    #[inline(always)]
+    pub unsafe fn add(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_add_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sub(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_sub_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn mul(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_mul_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn div(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_div_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn max(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_max_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn min(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_min_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn and(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_and_f32(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn or(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_or_f32(self.0, a.0, b.0, n) }
+    }
 
     // -- f16 operations (same VecBuf, different intrinsics) --
-    #[inline(always)] pub unsafe fn reduce_max_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 { unsafe { crate::__tile_reduce_max_f16(work.0, self.0, rwork.0, n) } }
-    #[inline(always)] pub unsafe fn reduce_min_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 { unsafe { crate::__tile_reduce_min_f16(work.0, self.0, rwork.0, n) } }
-    #[inline(always)] pub unsafe fn reduce_sum_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 { unsafe { crate::__tile_reduce_sum_f16(work.0, self.0, rwork.0, n) } }
-    #[inline(always)] pub unsafe fn exp_f16(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_exp_f16(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn abs_f16(self, src: VecBuf, n: u32) { unsafe { crate::__tile_v_abs_f16(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn ln_f16(self, src: VecBuf, n: u32) { unsafe { crate::__tile_ln_f16(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn adds_f16(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_adds_f16(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn muls_f16(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_muls_f16(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn add_f16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_add_f16(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn sub_f16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_sub_f16(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn mul_f16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_v_mul_f16(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn div_f16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_div_f16(self.0, a.0, b.0, n) } }
+    #[inline(always)]
+    pub unsafe fn reduce_max_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 {
+        unsafe { crate::__tile_reduce_max_f16(work.0, self.0, rwork.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn reduce_min_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 {
+        unsafe { crate::__tile_reduce_min_f16(work.0, self.0, rwork.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn reduce_sum_f16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 {
+        unsafe { crate::__tile_reduce_sum_f16(work.0, self.0, rwork.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn exp_f16(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_exp_f16(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn abs_f16(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_abs_f16(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn ln_f16(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_ln_f16(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn adds_f16(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_adds_f16(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn muls_f16(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_muls_f16(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn add_f16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_add_f16(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sub_f16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_sub_f16(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn mul_f16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_v_mul_f16(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn div_f16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_div_f16(self.0, a.0, b.0, n) }
+    }
 
     // -- bf16 operations --
-    #[inline(always)] pub unsafe fn reduce_max_bf16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 { unsafe { crate::__tile_reduce_max_bf16(work.0, self.0, rwork.0, n) } }
-    #[inline(always)] pub unsafe fn reduce_sum_bf16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 { unsafe { crate::__tile_reduce_sum_bf16(work.0, self.0, rwork.0, n) } }
-    #[inline(always)] pub unsafe fn exp_bf16(self, src: VecBuf, n: u32) { unsafe { crate::__tile_exp_bf16(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn abs_bf16(self, src: VecBuf, n: u32) { unsafe { crate::__tile_abs_bf16(self.0, src.0, n) } }
-    #[inline(always)] pub unsafe fn adds_bf16(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_adds_bf16(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn muls_bf16(self, src: VecBuf, s: f32, n: u32) { unsafe { crate::__tile_muls_bf16(self.0, src.0, s, n) } }
-    #[inline(always)] pub unsafe fn add_bf16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_add_bf16(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn sub_bf16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_sub_bf16(self.0, a.0, b.0, n) } }
-    #[inline(always)] pub unsafe fn mul_bf16(self, a: VecBuf, b: VecBuf, n: u32) { unsafe { crate::__tile_mul_bf16(self.0, a.0, b.0, n) } }
+    #[inline(always)]
+    pub unsafe fn reduce_max_bf16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 {
+        unsafe { crate::__tile_reduce_max_bf16(work.0, self.0, rwork.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn reduce_sum_bf16(self, work: VecBuf, rwork: VecBuf, n: u32) -> f32 {
+        unsafe { crate::__tile_reduce_sum_bf16(work.0, self.0, rwork.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn exp_bf16(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_exp_bf16(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn abs_bf16(self, src: VecBuf, n: u32) {
+        unsafe { crate::__tile_abs_bf16(self.0, src.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn adds_bf16(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_adds_bf16(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn muls_bf16(self, src: VecBuf, s: f32, n: u32) {
+        unsafe { crate::__tile_muls_bf16(self.0, src.0, s, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn add_bf16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_add_bf16(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn sub_bf16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_sub_bf16(self.0, a.0, b.0, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn mul_bf16(self, a: VecBuf, b: VecBuf, n: u32) {
+        unsafe { crate::__tile_mul_bf16(self.0, a.0, b.0, n) }
+    }
 
     // -- Fill (broadcast scalar) --
-    #[inline(always)] pub unsafe fn fill(self, val: f32, n: u32) { unsafe { crate::__tile_buf_fill_f32(self.0, val, n) } }
-    #[inline(always)] pub unsafe fn fill_f16(self, val: f32, n: u32) { unsafe { crate::__tile_buf_fill_f16(self.0, val, n) } }
-    #[inline(always)] pub unsafe fn fill_bf16(self, val: f32, n: u32) { unsafe { crate::__tile_buf_fill_bf16(self.0, val, n) } }
+    #[inline(always)]
+    pub unsafe fn fill(self, val: f32, n: u32) {
+        unsafe { crate::__tile_buf_fill_f32(self.0, val, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn fill_f16(self, val: f32, n: u32) {
+        unsafe { crate::__tile_buf_fill_f16(self.0, val, n) }
+    }
+    #[inline(always)]
+    pub unsafe fn fill_bf16(self, val: f32, n: u32) {
+        unsafe { crate::__tile_buf_fill_bf16(self.0, val, n) }
+    }
 }
 
 // =============================================================================

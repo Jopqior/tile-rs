@@ -26,13 +26,14 @@ impl TargetRegistry {
     /// Empty registry. Use [`with_builtin`](Self::with_builtin) for the usual
     /// pre-populated one.
     pub fn new() -> Self {
-        Self { targets: Vec::new() }
+        Self {
+            targets: Vec::new(),
+        }
     }
 
-    /// Registry pre-populated with every built-in target compiled into this
-    /// build (the open reference targets always; the closed Ascend targets when
-    /// the `ascend` feature is on). A closed/downstream crate can add more with
-    /// [`register`](Self::register).
+    /// Registry pre-populated with every target compiled into this crate: the
+    /// debug reference target always, and the Metal emitter under `emitters`.
+    /// A downstream crate adds more with [`register`](Self::register).
     pub fn with_builtin() -> Self {
         let mut r = Self::new();
         crate::targets::register_builtin(&mut r);
@@ -48,7 +49,10 @@ impl TargetRegistry {
 
     /// Resolve a target by its `name()` (the `TILERS_CODEGEN_PATH` value).
     pub fn select(&self, name: &str) -> Option<&dyn CodegenTarget> {
-        self.targets.iter().map(|b| b.as_ref()).find(|t| t.name() == name)
+        self.targets
+            .iter()
+            .map(|b| b.as_ref())
+            .find(|t| t.name() == name)
     }
 
     /// Names of all registered targets (for `--help` / diagnostics / "unknown

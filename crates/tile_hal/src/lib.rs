@@ -30,6 +30,9 @@ pub mod ascend;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 
+#[cfg(feature = "aie")]
+pub mod aie;
+
 pub mod prelude {
     pub use crate::backend::*;
     pub use crate::buffer::*;

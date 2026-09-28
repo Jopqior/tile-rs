@@ -1,0 +1,10 @@
+[package]
+name = "matmul_rs_kernels"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tile_std = { path = "../../../crates/tile_std" }
+
+[lib]
+crate-type = ["cdylib", "lib"]

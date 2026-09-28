@@ -1,0 +1,15 @@
+[package]
+name = "mha"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+log = "0.4.26"
+simple_logger = "5.0.0"
+anyhow = "1.0"
+ascend_rs = { path = "../../crates/ascend_rs" }
+ascend_rs_blas = { path = "../../crates/ascend_rs_blas" }
+common = { path = "../common" }
+
+[build-dependencies]
+tile_kernel_builder = { path = "../../crates/tile_kernel_builder" }

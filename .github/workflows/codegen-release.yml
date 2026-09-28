@@ -20,7 +20,7 @@ name: Codegen Release
 #
 # ── REQUIRED SECRET (read the private source) ────────────────────────────────
 #   Name : PRIVATE_SOURCE_TOKEN
-#   Scope: Contents: Read on yijunyu/ascend-rs-priv (the private codegen source)
+#   Scope: Contents: Read on the private codegen source repository
 #          (fine-grained PAT limited to that one repo; classic PAT `repo` works too)
 #   Add  : gh secret set PRIVATE_SOURCE_TOKEN --repo yijunyu/tile-rs
 #
@@ -53,7 +53,9 @@ permissions:
 env:
   RUST_BACKTRACE: 1
   RUST_TOOLCHAIN: nightly-2025-08-04
-  PRIVATE_SOURCE_REPO: yijunyu/ascend-rs-priv
+  # A secret rather than a variable so the name is masked in the public run logs:
+  # gh secret set PRIVATE_SOURCE_REPO --repo yijunyu/tile-rs
+  PRIVATE_SOURCE_REPO: ${{ secrets.PRIVATE_SOURCE_REPO }}
   PRIVATE_SOURCE_REF: main
 
 jobs:

@@ -888,19 +888,25 @@ pub unsafe fn matmul_f16_transpose_a(
 /// Negate: neg(x) = -x = Muls(x, -1)
 #[inline(always)]
 pub unsafe fn neg_f32(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { crate::__tile_muls_f32(dst, src, -1.0f32, n); }
+    unsafe {
+        crate::__tile_muls_f32(dst, src, -1.0f32, n);
+    }
 }
 
 /// Negate (f16): neg(x) = -x
 #[inline(always)]
 pub unsafe fn neg_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { crate::__tile_muls_f16(dst, src, -1.0f32, n); }
+    unsafe {
+        crate::__tile_muls_f16(dst, src, -1.0f32, n);
+    }
 }
 
 /// ReLU (f16): relu(x) = max(x, 0)
 #[inline(always)]
 pub unsafe fn relu_f16(dst: UbBuf, src: UbBuf, n: u32) {
-    unsafe { crate::__tile_maxs_f16(dst, src, 0.0f32, n); }
+    unsafe {
+        crate::__tile_maxs_f16(dst, src, 0.0f32, n);
+    }
 }
 
 /// Sigmoid (f16): sigmoid(x) = 1 / (1 + exp(-x))

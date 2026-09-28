@@ -1,15 +1,13 @@
-//! Built-in target registration — the open/closed seam.
+//! Built-in target registration.
 //!
 //! * The open skeleton always ships a self-contained [`DebugTarget`] so the
 //!   trait + registry + emit path is exercisable with zero external deps.
-//! * The real MLIR->source emitters (`gpu`, `msl`, `spirv`, `nki`, `aie`, …) are
-//!   wired under the `emitters` feature — they live in the full
-//!   `rustc_codegen_tile` tree and import `crate::mlir_parse`, so they compile on
-//!   an LLVM-20 box (adablue/910c). See `register_emitters`.
-//! * The CLOSED AscendC + PTO targets come in under `ascend` — registered the
-//!   SAME WAY (`register(Box::new(..))`), which is the entire point: "move
-//!   ascend-specific codegen to the same level as the other targets" reduces to
-//!   one registration call, not a bespoke dispatch arm.
+//! * The Metal emitter (`msl`) is wired under the `emitters` feature. See
+//!   `crate::emitters::register`.
+//! * Every other backend, including the AscendC and PTO targets, is registered
+//!   by a host crate with the same `register(Box::new(..))` call, through
+//!   [`EmitterTarget`] or its own [`CodegenTarget`] impl. Nothing in this crate
+//!   names them.
 
 use crate::registry::TargetRegistry;
 use crate::target::{CodegenTarget, EmitOpts, EmitOut, TargetMeta};
@@ -19,10 +17,8 @@ pub fn register_builtin(r: &mut TargetRegistry) {
     r.register(Box::new(DebugTarget));
 
     #[cfg(feature = "emitters")]
-    register_emitters(r);
+    crate::emitters::register(r);
 
-    #[cfg(feature = "ascend")]
-    crate::ascend::register(r);
 }
 
 /// Self-contained reference target. Proves the trait/registry/emit path end to
@@ -52,28 +48,6 @@ impl CodegenTarget for DebugTarget {
     }
 }
 
-// ── Real emitters (adablue / LLVM-20 build) ───────────────────────────────────
-// Each wraps an existing `convert_mlir_to_<t>` from the rustc_codegen_tile tree.
-// 14 of 15 share the signature `(mlir: &str) -> Result<String, String>`; only
-// AscendC takes `ub_size` and returns richer metadata — handled in `crate::ascend`.
-#[cfg(feature = "emitters")]
-fn register_emitters(r: &mut TargetRegistry) {
-    use crate::emitters::*;
-    r.register(Box::new(EmitterTarget::new("gpu", "cu", convert_mlir_to_gpu)));
-    r.register(Box::new(EmitterTarget::new("musa", "mu", convert_mlir_to_musa)));
-    r.register(Box::new(EmitterTarget::new("spirv", "comp", convert_mlir_to_spirv)));
-    r.register(Box::new(EmitterTarget::new("msl", "metal", convert_mlir_to_msl)));
-    r.register(Box::new(EmitterTarget::new("nki", "py", convert_mlir_to_nki)));
-    r.register(Box::new(EmitterTarget::new("aie", "py", convert_mlir_to_aie)));
-    r.register(Box::new(EmitterTarget::new("bang", "mlu", convert_mlir_to_bang)));
-    r.register(Box::new(EmitterTarget::new("gaudi", "c", convert_mlir_to_gaudi)));
-    r.register(Box::new(EmitterTarget::new("tpu", "py", convert_mlir_to_tpu)));
-    r.register(Box::new(EmitterTarget::new("csl", "csl", convert_mlir_to_csl)));
-    r.register(Box::new(EmitterTarget::new("hexagon", "c", convert_mlir_to_hexagon)));
-    r.register(Box::new(EmitterTarget::new("ttmetal", "cpp", convert_mlir_to_ttmetal)));
-    r.register(Box::new(EmitterTarget::new("linalg", "mlir", convert_mlir_to_linalg)));
-}
-
 /// Adapter that turns a plain `(mlir: &str) -> Result<String, String>` emitter
 /// (the 14 uniform backends) into a [`CodegenTarget`]. Std-only and ALWAYS
 /// available — host crates (e.g. `rustc_codegen_tile`) register their own
@@ -86,7 +60,11 @@ pub struct EmitterTarget {
 }
 
 impl EmitterTarget {
-    pub fn new(name: &'static str, ext: &'static str, f: fn(&str) -> Result<String, String>) -> Self {
+    pub fn new(
+        name: &'static str,
+        ext: &'static str,
+        f: fn(&str) -> Result<String, String>,
+    ) -> Self {
         Self { name, ext, f }
     }
 }
@@ -97,6 +75,10 @@ impl CodegenTarget for EmitterTarget {
     }
     fn emit(&self, mlir_text: &str, _opts: &EmitOpts) -> Result<EmitOut, String> {
         let source = (self.f)(mlir_text)?;
-        Ok(EmitOut { source, ext: self.ext, meta: TargetMeta::default() })
+        Ok(EmitOut {
+            source,
+            ext: self.ext,
+            meta: TargetMeta::default(),
+        })
     }
 }

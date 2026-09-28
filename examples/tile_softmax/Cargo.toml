@@ -1,0 +1,14 @@
+[package]
+name = "tile_softmax"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ascend_rs = { path = "../../crates/ascend_rs" }
+anyhow = "1"
+log = "0.4"
+simple_logger = "5.0.0"
+libloading = "0.8"
+
+[build-dependencies]
+tile_kernel_builder = { path = "../../crates/tile_kernel_builder" }
