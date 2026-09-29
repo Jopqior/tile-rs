@@ -1,0 +1,28 @@
+name: Rust kernel e2e compatibility (temporary experiment)
+
+# Single-use experiment branch. No PR, tag, manual-dispatch, or default-branch trigger.
+on:
+  push:
+    branches: ['experiment/rust-kernel-e2e-2924af3-v002-20260929']
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the fixed public source commit must be available locally
+      - name: Release front end -> actual MLIR -> fixed-source registry MSL
+        run: bash experiments/rust-kernel-e2e/run.sh
+      - name: Save non-secret experiment evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-kernel-e2e-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/rust-kernel-e2e/evidence/
+          if-no-files-found: warn
+          retention-days: 30
