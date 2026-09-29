@@ -40,3 +40,71 @@
 | 现有 `metal_correctness` 手写 MLIR 起点 | 公开 MLIR→MSL emitter、Metal/参考比较（修正其固定分支兼容性后） | **不覆盖 Rust→MLIR**，不能满足用户新要求 |
 
 **建议的下一道研究/实施前门槛**：在授权、可信来源和人工审查下载前提下，固定 0.0.2 digest 与公开代码提交；以小 Rust add kernel 测出 MLIR 文件与内置 Metal 源、单独将同一 MLIR 送进该提交的 `msl` registry，再按现有 GPU/CPU 参考路径执行、报告精确每一步结果。如果无法拿到兼容的 MLIR 或无法证明使用的是当前源码 emitter，应如实写明阻塞，不能降级为使用内置 emitter 或手写 MLIR 却称全链通过。
+
+## 5. 授权后的兼容性实验：环境门槛阻塞（2026-09-29 UTC）
+
+本节是**实验执行记录，不是兼容性通过记录**。先检查本机与已有、明确供本项目使用的 macOS 执行环境；本机是 Linux x86_64，公开 Release 唯一资产是 macOS arm64。项目已有 `macos-15` / `macos-14` GitHub-hosted 工作流配置，但调用远程 workflow 已被本次授权明确排除；未找到可直接使用的、明确为本项目配置的 macOS 主机。故在环境门槛停止，**没有下载/解包/运行 Release，没有运行 Rust 前端或 emitter**。没有把静态示例、发布方自测或包内 Metal 当成本次结果；也未改 tracker、CI、主工作目录，未发起远程执行。
+
+### 执行环境、命令及原样关键输出
+
+检查时间 `2026-09-29T16:38:40Z`；工作区为既有独立 worktree `/tmp/tile-rs-rust-kernel-e2e-feasibility`，分支 `research/rust-kernel-e2e-feasibility`（检查时 HEAD `5c57e005462727d7a7aea334a342e56b479bbe97`）。固定受测**公开源码**为 `2924af350f8843738f276b9a8695b0416a2d3d49`；检查 `git diff --stat 2924af3 HEAD -- crates/tile_std crates/tile_std_macros crates/tile_codegen` 输出为空，即这三部分在报告 worktree 与固定提交间无差异。这不改变固定基线。主工作目录只读检查结果 `?? Cargo.lock`，保留未跟踪文件。
+
+```text
+$ uname -s -m
+Linux x86_64
+$ for t in git gh rustc cargo curl shasum sha256sum xcrun xcodebuild ssh; do command -v "$t" || true; done
+/usr/bin/git
+/usr/bin/gh
+/home/whh/.cargo/bin/rustc
+/home/whh/.cargo/bin/cargo
+/usr/bin/curl
+/usr/bin/shasum
+/usr/bin/sha256sum
+/usr/bin/ssh
+$ rustc +nightly-2025-08-04 -vV
+rustc 1.91.0-nightly (f34ba774c 2025-08-03)
+binary: rustc
+commit-hash: f34ba774c78ea32b7c40598b8ad23e75cdac42a6
+commit-date: 2025-08-03
+host: x86_64-unknown-linux-gnu
+release: 1.91.0-nightly
+LLVM version: 20.1.8
+$ cargo +nightly-2025-08-04 -V
+cargo 1.91.0-nightly (840b83a10 2025-07-30)
+$ command -v xcrun || true; command -v xcodebuild || true
+# stdout/stderr: empty
+```
+
+现有配置仅作本地文件核查：固定提交的 [Metal correctness workflow](https://github.com/Jopqior/tile-rs/blob/2924af350f8843738f276b9a8695b0416a2d3d49/.github/workflows/metal-correctness.yml) 采用 GitHub-hosted `macos-15`，[install-smoke workflow](https://github.com/Jopqior/tile-rs/blob/2924af350f8843738f276b9a8695b0416a2d3d49/.github/workflows/install-smoke.yml) 采用 `macos-14`；项目工作流中无 `self-hosted` 配置。检查本机 SSH **别名行**只有 `aisoft`、`github.com`；前者没有 macOS 或本项目用途的明确配置，未连接、未探测网络或私有访问。项目标识的 `TILE*`/`METAL*`/`MACOS*`/`RUNNER*`/`GH*` 环境变量名列表为空。已有 GitHub 托管 runner 并不等于当前获准启动它。
+
+Release API 只读核查（**API digest，不是本机下载后 SHA256**）：
+
+```text
+$ gh api 'repos/yijunyu/tile-rs/releases/tags/v0.0.2%2Bnightly-2025-08-04' --jq '{tag_name,created_at,published_at,assets:[.assets[]|{name,size,digest,browser_download_url}]}'
+{"assets":[{"browser_download_url":"https://github.com/yijunyu/tile-rs/releases/download/v0.0.2%2Bnightly-2025-08-04/tile-rs-codegen-aarch64-apple-darwin.tar.gz","digest":"sha256:70fffed473aa2d5c3f51bcc04caf9d18e0379188e764689ed52be0c373926891","name":"tile-rs-codegen-aarch64-apple-darwin.tar.gz","size":103449511}],"created_at":"2026-09-01T14:21:01Z","published_at":"2026-09-06T01:26:13Z","tag_name":"v0.0.2+nightly-2025-08-04"}
+$ gh api 'repos/yijunyu/tile-rs/git/ref/tags/v0.0.2+nightly-2025-08-04' --jq '{ref,object:{sha:.object.sha,type:.object.type}}'
+{"object":{"sha":"c3c8ec0169bd02757b51370ba9c6ec3b116b833d","type":"commit"},"ref":"refs/tags/v0.0.2+nightly-2025-08-04"}
+# 两条命令 stderr: empty
+```
+
+[发布说明](https://github.com/yijunyu/tile-rs/releases/tag/v0.0.2%2Bnightly-2025-08-04) 只明确 0.0.2 的 rlib 修复所涉私有提交 `4c9e43f68`、`a1d1014ba`；[公开发布工作流](https://github.com/yijunyu/tile-rs/blob/6d59de3018ff85dacd8a8b0a98215f7063eff211/.github/workflows/codegen-release.yml) 则从**私有源** checkout 编译后端。公开 Release tag 指向公开仓库的 `c3c8ec...`，**不能据此证明**该 tag 的 `tile_std`/宏来自实际二进制构建所用的私有源码，也不能把随包 `libtile_std_macros.dylib` 当作匹配的可替换**源码**。目前没有具出处的 Release 匹配 `tile_std`/宏源码版本可据以做对照；用户关于“必须同 Release”的假设仍待实验，不据此替换 `2924af3` 基线。
+
+### 两个目标的实测状态与资产
+
+| 目标 / 阶段 | 本次状态 | 原因 / 产物 |
+| --- | --- | --- |
+| (1) Release 前端 + `2924af3` `tile_std`/宏编译最小 Rust add kernel | **未运行：环境阻塞，非编译失败、非成功** | 本机 Linux x86_64；Release 只有 Apple Silicon macOS dylib；没有可在授权范围内启动的 macOS 运行环境。未生成或运行输入 crate。 |
+| 前端实际 MLIR 导出 | **未运行，MLIR 缺失（未生成，不是已运行后未产出）** | 原始 `.mlir`：无；stdout/stderr：无（命令未执行）。 |
+| (2) `2924af3` 公开 `tile_codegen` registry + `emitters` 的 `msl` 接受同一份真实 MLIR | **未运行，非 emitter 拒绝、非成功** | 上游真实 MLIR 不存在；当前源码生成 MSL：无；stdout/stderr：无。未使用随包/内置 MSL、手写 MLIR 或别的提交 emitter 代替。 |
+| GPU 执行 / 数值正确性 | **不在本次要求内；未运行** | 无。 |
+
+**没有可记录的实际 kernel 输入、MLIR、MSL、前端或 emitter stderr**；上面的环境/API 检查原样输出是本次全部执行记录。仓库的 `examples/bench_vec_add_rs/kernels/src/lib.rs` 与 `crates/tile_std/src/lib.rs`、`crates/tile_std_macros/src/lib.rs` 仅供后续设计输入使用，不是本次运行的 kernel。目标接口来自固定提交 [`tile_codegen/src/registry.rs`](https://github.com/Jopqior/tile-rs/blob/2924af350f8843738f276b9a8695b0416a2d3d49/crates/tile_codegen/src/registry.rs) 与 [`emitters.rs`](https://github.com/Jopqior/tile-rs/blob/2924af350f8843738f276b9a8695b0416a2d3d49/crates/tile_codegen/src/emitters.rs)，均只是静态核对。
+
+### 若另行授权远程执行：最小实验方案（尚未执行）
+
+1. 选择**已有且明确可由本项目使用**的 macOS arm64 环境，并单独授权其具体远程执行方式（例如在公开项目已有 `macos-15` runner 上由授权者运行一次性实验；本次**不得**自行触发/创建 workflow 或付费资源）。记录 `sw_vers`、`uname -m`、`rustc +nightly-2025-08-04 -vV`、`cargo -V`、`xcodebuild -version`，预检 `rustc-dev`、`llvm-tools`、`rust-src`，缺失时由授权者决定安装范围，不全局安装。
+2. 在隔离的 `/tmp` 空间 checkout 固定 `2924af3`，建立最小 f32 add kernel crate，**只**以此提交的 `crates/tile_std` 路径依赖（由它依赖同提交宏），保存确切 `Cargo.toml`、`src/lib.rs`、sha256；不要直接接包内 macro dylib。通过 Release API 取固定 tag/URL/digest，下载到隔离空间后 `shasum -a 256` 与已知值比对，**校验通过才**列举归档成员、审阅 `USAGE.md` / `.cargo/config.toml`，拒绝危险路径再解包。按文档以确切 nightly + `--target aarch64-apple-darwin` 与 `TILERS_CODEGEN_PATH=metal` 调用后端（显式目标避免宿主 proc-macro 被后端接管），捕获命令、stdout/stderr、返回码、版本和输出目录。内置 Metal 可以同时出现，但**一律忽略**。
+3. 编译失败时保存第一条诊断和完整 log，区分 `tile_std`/宏源码编译、标记识别、ABI/链接、后端本身等失败，**不要在没有报错证据时断言“版本不匹配”**；编译成功但无 `*.mlir` 另记为“MLIR 缺失”。仅在拿到来源可追溯的 Release 匹配 `tile_std` **及**宏源码时，用**同一 kernel、命令与工具链**做单独对照并保留两组报告；不能据 tag 日期、公开 repo tag 或 dylib 名猜私有构建提交。
+4. 有真实 `.mlir` 后，从同一固定公开提交在隔离临时 crate 中依赖 `tile_codegen = { path = ".../crates/tile_codegen", features = ["emitters"] }`；读取该 `.mlir`，用 `TargetRegistry::with_builtin().select("msl")` + `CodegenTarget::emit(&mlir, &EmitOpts::default())`，独立保存 stdout/stderr/返回码与生成 `.metal`。报告 emitter **拒绝**（含原始错误）或**成功生成 MSL**，绝不以 Release 内置 MSL 替代。无需 GPU 执行或数值比较。
+
+**所需下一步决策/授权**：提供明确供本项目使用的 macOS arm64 执行环境及获准的调用方式，或明确授权在现有 GitHub-hosted macOS runner 上开展独立实验；在此之前两项目标均维持“未实测/环境阻塞”。
