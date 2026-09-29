@@ -41,6 +41,7 @@ required() {
 
 printf 'baseline=%s\nrelease=%s\nexpected_sha256=%s\nbranch=%s\nrun=%s attempt=%s\n' \
   "$BASE_SHA" "$TAG" "$EXPECTED_SHA" "$EXPERIMENT" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" > "$EV/identity.txt"
+printf 'profile=release (control for debug-profile run 36600896625)\n' >> "$EV/identity.txt"
 if [ "$GITHUB_REF_NAME" != "$EXPERIMENT" ]; then record branch wrong_branch; exit 2; fi
 if [ "$(uname -s -m)" != 'Darwin arm64' ]; then record platform wrong_arch; exit 2; fi
 {
@@ -173,11 +174,14 @@ cp "$WORK/emitter/Cargo.toml" "$EV/inputs/emitter-Cargo.toml"
 
 # Cargo discovers local .cargo/config.toml from its CWD, NOT from --manifest-path.
 # Run from the isolated kernel crate so the target-only backend flags apply.
+# One controlled --release profile run: debug run 36600896625 emitted the kernel
+# plus unused tile_std functions, then failed on an unused window-mask helper.
+# The published workflow documents cargo build --release; source/ABI stay fixed.
 pushd "$WORK/kernel" >/dev/null
 run frontend env CARGO_TARGET_DIR="$WORK/kernel-target" TILERS_CODEGEN_PATH=metal \
   TILERS_CODEGEN_SO="$BUNDLE/lib/librustc_codegen_tile.dylib" \
   cargo +nightly-2025-08-04 build --manifest-path "$WORK/kernel/Cargo.toml" \
-  --target aarch64-apple-darwin -v
+  --target aarch64-apple-darwin --release -v
 popd >/dev/null
 FRONT_RC="$(< "$EV/logs/frontend.exit")"
 if [ "$FRONT_RC" != 0 ]; then
