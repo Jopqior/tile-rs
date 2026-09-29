@@ -2,9 +2,9 @@
 
 - 调研日期：**2026-09-29 UTC**。范围：[本地地图 #42](https://github.com/Jopqior/tile-rs/issues/42) 的**新要求**（取代该票正文中“Rust → MLIR 超出范围”的旧边界）；只研究，不更改票据或实现。
 - 固定源码：规划 checkout [`2924af350f8843738f276b9a8695b0416a2d3d49`](https://github.com/Jopqior/tile-rs/commit/2924af350f8843738f276b9a8695b0416a2d3d49)（含固定上游 `e8d1acd`）；本地 `main` / `upstream/main` [`6d59de3018ff85dacd8a8b0a98215f7063eff211`](https://github.com/yijunyu/tile-rs/commit/6d59de3018ff85dacd8a8b0a98215f7063eff211)。引用后者是分析已有接口，**不等于**让规划分支跟进它。
-- 初稿方法（下文 §1–5）：`gh` 查公开仓库、Release API、工作流及运行记录；对两个固定提交只读源码。初稿未下载/运行 Release 或 macOS CI。**后来已获授权实施隔离 macOS 实验，实测结论见 §6；§1–5 的“尚未验证”及“不得启动 workflow”仅描述当时状态，已由 §6 取代。**始终没有访问私有源、运行 GPU 或合并正式 CI。
+- 初稿方法（下文 §1–5）：`gh` 查公开仓库、Release API、工作流及运行记录；对两个固定提交只读源码。初稿未下载/运行 Release 或 macOS CI。**后来已获授权实施隔离 macOS 实验，实测结论见 §6–7；§1–5 的“尚未验证”及“不得启动 workflow”仅描述当时状态，已由 §6–7 取代。**始终没有访问私有源、运行 GPU 或合并正式 CI。
 
-> **最新实测（§6）：两个目标均未通过。** 0.0.2 + 固定 `2924af3` 的 add kernel 编译在发布后端**内置** MSL 阶段因 `__tile_window_mask_f32` 报错；仍输出含 `add_f32_small` 的真实 MLIR。固定公开源码 registry 的 `msl` emitter 对该**原始真实 MLIR**返回拒绝，未生成 MSL。不是“缺 macOS 环境”；详情、日志与全部产物见 §6 的 Actions artifacts。
+> **最新补充（§7；§6 仍是固定 DSL 对照）：** 已实际测试公开 Release tag `c3c8ec0` 的 `tile_std` + 同 tag 源码宏，以及该 `tile_std` + Release 包内预编译宏。两种组合均使 Release 前端完成 Cargo release 编译、真实导出相同的 kernel MLIR；固定 `2924af3` 的 registry emitter 对两份原始 MLIR 均拒绝，因而均无当前源码 MSL。公开 tag 的源码是有出处的候选，**不能证明**与二进制私有构建同版。详情、逐阶段日志及产物见 §7；§6 中 `2924af3` DSL 的内置 MSL 失败不能再概括成“Release 对所有 DSL 均无法编译”。
 
 ## 结论（初稿静态判断，最终以 §6 为准）
 
@@ -159,6 +159,42 @@ fixed-source registry msl rejected actual frontend MLIR: kernel @add_f32_small c
 
 ### 版本假设、限制与最终状态
 
-- `tile_std`/宏源码在正确配置下已编译，最小 add 的真实 MLIR 已导出；“必须把 DSL/宏换成 Release 匹配版”的猜测**未获证实**。这里的首个报错发生在内置 MSL（含未使用 helper）而非宏入口识别阶段；不能据此反推所有 DSL API 都兼容。
+- 固定 `2924af3` `tile_std`/宏源码在正确配置下已编译，最小 add 的真实 MLIR 已导出；此对照的内置 MSL 报错发生在未用 helper 而非宏入口识别阶段；不能据此反推所有 DSL API 都兼容。**此处是 §6 当时的推断；§7 已实际尝试公开 Release tag 的 DSL/源码宏和包内宏，得到不同的 Cargo 编译结果。**
 - 发布说明仅把 0.0.2 的修复关联到私有源 `4c9e43f68`、`a1d1014ba`；公开 Release tag `c3c8ec...` 和包内 macro dylib **不能证明**某份公开 `tile_std`/宏源码就是二进制构建版本。未发现可追溯且确定匹配的公开源码对照；没有私自猜提交、替换基线或探测私有仓库。
-- **目标 (1)：实测失败（发布后端内置 MSL 错误）；MLIR 已存在。目标 (2)：实测拒绝（固定公开 registry emitter）；当前源码 MSL 不存在。**两个 run 的 workflow 失败由上述产品/接口行为导致，前四次才是实验接线/网络门槛；无 GPU 执行、MSL 编译或数值正确性声明。后续如需验证是否由版本差异导致，应先获取可追溯的匹配源码或另行设计明确授权的对照；不能将原始失败换基线后宣称 `2924af3` 已通过。
+- **目标 (1)：在 §6 的固定 DSL 组合中实测失败（发布后端内置 MSL 错误）；MLIR 已存在。目标 (2)：固定公开 registry emitter 拒绝；当前源码 MSL 不存在。**两个 run 的 workflow 失败由上述产品/接口行为导致，前四次才是实验接线/网络门槛；无 GPU 执行、MSL 编译或数值正确性声明。不能将原始失败换基线后宣称 `2924af3` DSL 已通过。**公开 Release tag 对照的进一步实测见 §7。**
+
+## 7. 公开 Release tag 的 DSL/宏及包内预编译宏：实际对照（2026-09-29 UTC）
+
+### 来源、接线和边界
+
+[官方 0.0.2 Release 的公开 tag](https://github.com/yijunyu/tile-rs/tree/v0.0.2%2Bnightly-2025-08-04) 指向公开提交 [`c3c8ec0169bd02757b51370ba9c6ec3b116b833d`](https://github.com/yijunyu/tile-rs/commit/c3c8ec0169bd02757b51370ba9c6ec3b116b833d)（提交标题 *Update from private development repository*）；该树**确有** [`crates/tile_std`](https://github.com/yijunyu/tile-rs/tree/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/crates/tile_std) 和 [`crates/tile_std_macros`](https://github.com/yijunyu/tile-rs/tree/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/crates/tile_std_macros)。相对于固定 `2924af3`，`tile_std`/宏树明显不同（`tile.rs` 约 4,313 行差异，宏实现 71 行差异）；并非悄悄重测原版。公开 tag 的 [`tile_std/src/tile.rs`](https://github.com/yijunyu/tile-rs/blob/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/crates/tile_std/src/tile.rs) 仍提供 `tile_load_f32::<1,8>`、`tile_add_f32`、`tile_store_f32`；[`tile_std_macros/src/lib.rs`](https://github.com/yijunyu/tile-rs/blob/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/crates/tile_std_macros/src/lib.rs) 的 `tile_kernel` 仍注入 `#[tile::kernel]` 和 `#[unsafe(no_mangle)]`。故**不必改变 kernel 的 1×8 f32 逐元素相加计算含义，也不必改输入源码**；两 arm 的输入 `src/lib.rs` SHA256 均为 `71293e5b0335ea35fa59a6a464367f885e22a2cc5e2a65fe36b48d45f73ed4d3`。
+
+[公开 tag 的官方发布工作流](https://github.com/yijunyu/tile-rs/blob/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/.github/workflows/codegen-release.yml) 在发布时**从私有仓库 `main` checkout**，构建 `-p rustc_codegen_tile -p tile_std_macros --release` 并拷贝两个 dylib 打包；**未固定/公开实际私有构建 SHA、未证明** tag 的 `tile_std` 或宏源码与包内库的私有构建同版。[Release notes](https://github.com/yijunyu/tile-rs/releases/tag/v0.0.2%2Bnightly-2025-08-04) 只把 0.0.2 的 rlib 修复追溯到私有提交 `4c9e43f68` + `a1d1014ba`；不能从这些提交反推完整来源。此处的“Release 对应版”严格指**公开 Release tag 版本**，而不是已证明的**私有构建同版本**。尽管无法证明后者，仍实际测试了前者和包内库，而没有以不确定性为由停止。
+
+安装路径也要区分：发布包 `USAGE.md` 和上述 workflow 给的是 `TILERS_CODEGEN_SO` 指向 backend、`TILERS_CODEGEN_PATH=metal`、nightly 及 rustflags；实际 SHA 校验后的资产**没有**说明声称的 `.cargo/config.toml`，脚本按发布 workflow 模板为实验 crate 生成等效、限目标架构的 flags。[官方 `install.sh` @ tag](https://github.com/yijunyu/tile-rs/blob/c3c8ec0169bd02757b51370ba9c6ec3b116b833d/scripts/install.sh) 默认还是 0.0.1，需 `TILERS_CODEGEN_TAG=v0.0.2+nightly-2025-08-04` 才装本资产。官方 USAGE/安装脚本**没有写出用包内 `libtile_std_macros.dylib` 代替 Cargo 路径依赖宏的步骤**；这个 dylib 确实在资产内，但包内宏 arm 是**明确记录的实验性显式接线**，不是声称官方推荐的自动安装路径。
+
+新独立 `/tmp` worktree 的[实验分支](https://github.com/Jopqior/tile-rs/tree/experiment/rust-kernel-e2e-release-dsl-v002-20260929) 始于 §6 的 `97ab341`，只改该分支的[临时 workflow](https://github.com/Jopqior/tile-rs/blob/5df0cfe87ae50e74c4454f23c359864ee99d0d06/.github/workflows/rust-kernel-e2e-experiment.yml)触发为**新分支唯一 push**并添加[两臂实验脚本](https://github.com/Jopqior/tile-rs/blob/5df0cfe87ae50e74c4454f23c359864ee99d0d06/experiments/rust-kernel-e2e/run.sh)；不修改生产 emitter、默认分支或原研究主工作区，原有 `?? Cargo.lock` 保留。标准 `macos-15`，每 job 30 分钟，`contents: read`，无 secrets / 私有访问 / GPU 验证。实际 runner：macOS 15.7.9 arm64，Xcode 16.4，nightly-2025-08-04 `rustc 1.91.0-nightly f34ba774c`，LLVM 20.1.8。前端二进制**仍是** §6 的官方 0.0.2、实测 SHA256 `70fffed473aa2d5c3f51bcc04caf9d18e0379188e764689ed52be0c373926891`；runner 的匿名 Release API 返回 HTTP 403，使用此前从官方 API 固定的 URL/大小/digest，并在每次下载后实际校验大小与 SHA 才解包，不能把此次 403 当成新 API 在线确认。包内 `libtile_std_macros.dylib` 是 arm64 Mach-O dylib，`otool -L` 仅显示自身 `@loader_path` 与 `/usr/lib/libSystem.B.dylib`，实测 SHA256 `02093811a50b0fe6c2518d1a8b48a5ee001c1713299dbbcfd436656ccccb4157`。它不仅“存在”，下述第二臂也证明在该 nightly 上**能供 rustc 实际加载/展开 kernel**。
+
+每臂用同一 kernel、公开 tag `tile_std`，`cargo +nightly-2025-08-04 build --target aarch64-apple-darwin --release -v`、`TILERS_CODEGEN_PATH=metal` 和发布后端；单独目标目录保留每臂真实 MLIR。第一臂从 tag 的 manifest 正常编译、加载 tag 源码 `tile_std_macros`；第二臂也依赖 tag 的 `tile_std`，由[实验 rustc wrapper](https://github.com/Jopqior/tile-rs/blob/5df0cfe87ae50e74c4454f23c359864ee99d0d06/experiments/rust-kernel-e2e/bundled-macro-wrapper.py) **仅对 `tile_std` 的 `--extern tile_std_macros=…` 换成包内 dylib**，并为 re-export 在目标 rustflags 增加 `-Ldependency=<包内 lib 目录>`。该臂的 Cargo **仍会构建 tag 的源码宏依赖**（工作流日志可见），但日志记录了 `tile_std` 实际消费的是包内 dylib，不虚称源码宏完全没构建；其余 host 依赖不走发布 backend。两臂 MLIR 分别送到**固定 `2924af3`** `tile_codegen` 的 `TargetRegistry::with_builtin().select("msl").emit(&mlir, &EmitOpts::default())`，只输出当前源码 emitter 的 MSL，绝不复用包内内置 Metal。
+
+### 运行和实测矩阵
+
+| 来源及 run | Release 前端 Cargo 结果（与 MLIR 分开） | kernel 的真实 MLIR | 固定 `2924af3` registry MSL |
+| --- | --- | --- | --- |
+| `2924af3` `tile_std` + 其源码宏，[§6 release run 36601256344](https://github.com/Jopqior/tile-rs/actions/runs/36601256344) | **exit 101**；发布后端*内置* MSL 不接受未用 helper `__tile_window_mask_f32`（不是宏编译失败） | **有**，416,865 bytes，sha256 `027a6aa0431904af30c7322515eb4f1ffef006e107aebca6b714c5e6ee157d80` | **拒绝**原始 MLIR，误计两次 `__tile_add_f32`；无当前源码 MSL |
+| 公开 `c3c8ec0` tag `tile_std` + tag 源码宏，[有效 run 36603219250](https://github.com/Jopqior/tile-rs/actions/runs/36603219250) | **exit 0、`Finished release`**；不是仅“有 MLIR” | **有**，373,002 bytes，sha256 `26639ca32e8b6ff7f7fe3ec7fe02e71a59fa0ee1f13b81f8a41318bb22e77ff3` | **exit 1、拒绝**真实 MLIR，误计两次 `__tile_add_f32`；当前源码 MSL **不存在** |
+| 公开 `c3c8ec0` tag `tile_std` + 包内预编译宏，**同一有效 run** | **exit 0、`Finished release`**；`--extern` 实际被替换、包目录进入依赖搜索路径 | **有**，373,002 bytes，sha256 **同上一行**（逐字节相同） | **exit 1、拒绝**真实 MLIR，同一错误；当前源码 MSL **不存在** |
+
+[首个 run 36602935190](https://github.com/Jopqior/tile-rs/actions/runs/36602935190)已让 tag 源码宏臂 **Cargo exit 0、真实 MLIR、emitter 拒绝**；包内宏臂虽 `tile_std` 编译、wrapper 确实换掉 `--extern`，但 kernel 在加载其 re-export 时首先 `error[E0463]: can't find crate for tile_std`，同时缺 `panic_handler`/`sized`（连锁诊断），当时无该臂 kernel MLIR。原因是实验没有向依赖方 rustc 暴露包内 dylib 的目录；这属于**显式接线错误**，不能算包内宏 ABI 不兼容。加入 `-Ldependency=<bundle>/lib` 后在有效 run 36603219250 两臂均完整编译；该修复及两次独立运行/日志全留在分支历史与 artifacts，未无限重试。
+
+有效 run 的 `tag_source_macro.frontend.exit` 和 `bundled_macro.frontend.exit` 均为 `0`，独立的 `*.emitter.exit` 均为 `1`；因此 Actions workflow 整体是 **failure**，含义是当前 emitter 不通过，**不是**“cargo 编译失败”。原始拒绝日志（两臂相同，完整 stderr 在 artifact）：
+
+```text
+fixed-source registry msl rejected actual frontend MLIR: kernel @add_f32_small chains 2 compute intrinsics (__tile_add_f32}> : , __tile_add_f32) that this emitter cannot fold into one body; all but one would be silently dropped. Use a fused tile_std op, split the kernel, or add the pair to FUSED_COMPUTE_PAIRS with a fused KernelType.
+```
+
+MLIR 中 `add_f32_small` 入口真实存在，有 `hacc.entry`；针对单一 add 的 `llvm.mlir.addressof` 写 `global_name = @__tile_add_f32}> : …`，`llvm.call` 写 `callee = @__tile_add_f32, …`，正好触发 §6 所述[固定 emitter 的文本扫描](https://github.com/Jopqior/tile-rs/blob/2924af350f8843738f276b9a8695b0416a2d3d49/crates/rustc_codegen_tile/src/mlir_to_msl.rs#L625-L653)误计。同一份 tag 组合的 MLIR 内已无 `__tile_window_mask_f32`；这解释为何 §6 的内置阶段报错不再出现，但不能证明删除该 helper 是唯一根因，也不能证明任意复杂 kernel、同一私有源码版本或 Metal 数值正确性。实验从未修改 emitter 来绕过拒绝。
+
+**复核路径：** [有效 run 36603219250 的 artifact `rust-kernel-e2e-36603219250-1`](https://github.com/Jopqior/tile-rs/actions/runs/36603219250) 含 `identity.txt`、`environment.txt`、`source-provenance.txt`、`asset-url.txt`、`archive-members.txt`、`inputs/`（两臂 Cargo/config、同一 kernel、wrapper、发布 USAGE、emitter harness）、`commands.txt`（cwd 与实际 argv）、`logs/`（每阶段独立 exit/stdout/stderr、宏 dylib 的 file/otool/sha 及 `bundled-macro-swaps.txt`）、`tag_source_macro/mlir/actual-kernel.mlir` 和 `bundled_macro/mlir/actual-kernel.mlir`（各自 SHA）。`msl/` 只用于**成功时**保存 `fixed-source.metal`；本次两个 emitter 均拒绝，**没有可上传的当前源码 MSL**，证据是各臂 `*.emitter.stderr` / `*.emitter.exit`，不能拿内置输出充当缺失产物。[首 run 36602935190 的 artifact](https://github.com/Jopqior/tile-rs/actions/runs/36602935190) 保留接线错误的原始 stderr。两 run 所在分支仅见该临时 workflow；未运行 GPU、`xcrun metal -c` 或数值参考比较。
+
+**结论更新：** Release tag 源码 DSL/源码宏的实际尝试使目标 (1) **通过 Cargo 编译**且**有 MLIR**；包内预编译宏也能在明确接线后供这一 DSL/kernel 使用，并导出字节相同的 MLIR，纠正了把“无法证明私有版本同源”当成停止条件的误区。目标 (2) 对两臂仍**失败**：固定当前源码 registry 不接受**真实原始** MLIR，当前源码 MSL 没生成。可说 tag 候选在这一 kernel 上消除了原 `2924af3` DSL 组合的内置 MSL 失败；**不能**说二进制的私有构建就是 tag 代码、不能说跨版本约定全兼容或 Rust→MLIR→当前源码 MSL→GPU 已通过。
