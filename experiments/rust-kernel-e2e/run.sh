@@ -101,7 +101,7 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
         assert not p.is_absolute() and '..' not in p.parts and p.parts[0] == root, member.name
         assert member.isdir() or member.isfile(), 'link/special member: ' + member.name
         names.append(member.name)
-    for required in (root + '/USAGE.md', root + '/.cargo/config.toml', root + '/lib/librustc_codegen_tile.dylib'):
+    for required in (root + '/USAGE.md', root + '/lib/librustc_codegen_tile.dylib'):
         assert required in names, 'missing bundle member: ' + required
     pathlib.Path(sys.argv[2]).write_text('\n'.join(names) + '\n')
 PY
@@ -109,14 +109,18 @@ mkdir -p "$WORK/unpacked"
 required extract tar -xzf "$TARBALL" -C "$WORK/unpacked"
 BUNDLE="$WORK/unpacked/tile-rs-codegen"
 cp "$BUNDLE/USAGE.md" "$EV/inputs/release-USAGE.md"
-cp "$BUNDLE/.cargo/config.toml" "$EV/inputs/release-config.toml"
-# Audit the documented flags / target against the selected usage before running the dylib.
-if ! grep -q 'nightly-2025-08-04' "$BUNDLE/USAGE.md" ||
-   ! grep -q 'register_tool(tile)' "$BUNDLE/.cargo/config.toml" ||
-   ! grep -q 'codegen-backend=' "$BUNDLE/.cargo/config.toml"; then
-  record release_usage unexpected_config; exit 2
+# Verified v0.0.2 tarball has NO .cargo/config.toml despite the USAGE.md claim.
+# Generate a scoped equivalent below from the public release workflow's flags.
+if [ -f "$BUNDLE/.cargo/config.toml" ]; then
+  cp "$BUNDLE/.cargo/config.toml" "$EV/inputs/release-config.toml"
+else
+  printf 'Verified release tarball lacks .cargo/config.toml; USAGE.md claims it exists.\n' > "$EV/inputs/release-config-absence.txt"
 fi
-record release_usage reviewed
+if ! grep -q 'nightly-2025-08-04' "$BUNDLE/USAGE.md" ||
+   ! grep -q 'TILERS_CODEGEN_PATH' "$BUNDLE/USAGE.md"; then
+  record release_usage unexpected_usage; exit 2
+fi
+record release_usage reviewed_config_missing
 
 mkdir -p "$WORK/kernel/src" "$WORK/kernel/.cargo" "$WORK/emitter/src"
 cp experiments/rust-kernel-e2e/kernel/src/lib.rs "$WORK/kernel/src/lib.rs"
