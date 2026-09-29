@@ -93,7 +93,7 @@ record download verified_sha256
 # Validate every member BEFORE extraction; no absolute/traversal paths, links, devices or scripts.
 python3 - "$TARBALL" "$EV/archive-members.txt" <<'PY'
 import pathlib, sys, tarfile
-root = 'tile-rs-codegen-aarch64-apple-darwin'
+root = 'tile-rs-codegen'  # observed in verified Release tarball (run 36600093199)
 with tarfile.open(sys.argv[1], 'r:gz') as archive:
     names = []
     for member in archive:
@@ -107,7 +107,7 @@ with tarfile.open(sys.argv[1], 'r:gz') as archive:
 PY
 mkdir -p "$WORK/unpacked"
 required extract tar -xzf "$TARBALL" -C "$WORK/unpacked"
-BUNDLE="$WORK/unpacked/tile-rs-codegen-aarch64-apple-darwin"
+BUNDLE="$WORK/unpacked/tile-rs-codegen"
 cp "$BUNDLE/USAGE.md" "$EV/inputs/release-USAGE.md"
 cp "$BUNDLE/.cargo/config.toml" "$EV/inputs/release-config.toml"
 # Audit the documented flags / target against the selected usage before running the dylib.
