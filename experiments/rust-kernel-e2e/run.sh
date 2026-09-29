@@ -149,6 +149,10 @@ tile_std = { path = "$TAG_SOURCE/crates/tile_std" }
 [lib]
 crate-type = ["cdylib", "lib"]
 EOF
+  extra_search=''
+  # A re-exported proc macro must also be discoverable when compiling the
+  # dependent kernel, not only tile_std's direct --extern invocation.
+  if [ "$arm" = bundled_macro ]; then extra_search="  \"-Ldependency=$BUNDLE/lib\","; fi
   cat > "$WORK/$arm/.cargo/config.toml" <<EOF
 [target.aarch64-apple-darwin]
 rustflags = [
@@ -157,6 +161,7 @@ rustflags = [
   "-Zcrate-attr=register_tool(tile)",
   "-Cpanic=abort",
   "-Clto=off",
+$extra_search
 ]
 EOF
   cp "$WORK/$arm/Cargo.toml" "$EV/inputs/$arm-Cargo.toml"
