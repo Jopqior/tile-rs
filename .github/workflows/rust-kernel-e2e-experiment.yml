@@ -3,7 +3,7 @@ name: Rust kernel e2e compatibility (temporary experiment)
 # Single-use experiment branch. No PR, tag, manual-dispatch, or default-branch trigger.
 on:
   push:
-    branches: ['experiment/rust-kernel-e2e-2924af3-v002-20260929']
+    branches: ['experiment/rust-kernel-e2e-release-dsl-v002-20260929']
 
 permissions:
   contents: read
@@ -16,7 +16,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0 # the fixed public source commit must be available locally
-      - name: Release front end -> actual MLIR -> fixed-source registry MSL
+      - name: Release tag DSL and bundled macro -> actual MLIR -> fixed-source registry MSL
         run: bash experiments/rust-kernel-e2e/run.sh
       - name: Save non-secret experiment evidence even on failure
         if: always()
