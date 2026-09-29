@@ -17,6 +17,7 @@ record() { printf '%s\t%s\n' "$1" "$2" | tee -a "$EV/stages.tsv"; }
 run() {
   local name="$1" rc
   shift
+  printf 'cwd=%q ' "$PWD" >> "$EV/commands.txt"
   printf '%q ' "$@" >> "$EV/commands.txt"
   printf '\n' >> "$EV/commands.txt"
   set +e
@@ -170,11 +171,18 @@ cp "$WORK/kernel/.cargo/config.toml" "$EV/inputs/kernel-config.toml"
 cp "$WORK/emitter/Cargo.toml" "$EV/inputs/emitter-Cargo.toml"
 (cd "$EV/inputs" && shasum -a 256 kernel-Cargo.toml kernel-config.toml kernel-lib.rs emitter-Cargo.toml emitter-main.rs > ../input-sha256.txt)
 
+# Cargo discovers local .cargo/config.toml from its CWD, NOT from --manifest-path.
+# Run from the isolated kernel crate so the target-only backend flags apply.
+pushd "$WORK/kernel" >/dev/null
 run frontend env CARGO_TARGET_DIR="$WORK/kernel-target" TILERS_CODEGEN_PATH=metal \
   TILERS_CODEGEN_SO="$BUNDLE/lib/librustc_codegen_tile.dylib" \
   cargo +nightly-2025-08-04 build --manifest-path "$WORK/kernel/Cargo.toml" \
   --target aarch64-apple-darwin -v
+popd >/dev/null
 FRONT_RC="$(< "$EV/logs/frontend.exit")"
+if [ "$FRONT_RC" != 0 ]; then
+  find "$BASE" -type f -name 'rustc-ice-*.txt' -exec cp '{}' "$EV/logs/" \; || true
+fi
 if [ "$FRONT_RC" = 0 ]; then record frontend compiled; else record frontend compilation_failed; fi
 find "$WORK/kernel-target" -type f -name '*.mlir' -print | sort > "$EV/mlir-paths.txt" || true
 # Dependency MLIR is not the test: select only exported MLIR containing the kernel symbol.
