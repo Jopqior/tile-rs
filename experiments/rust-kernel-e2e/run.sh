@@ -62,31 +62,37 @@ required cargo_version cargo +nightly-2025-08-04 -V
 required components rustup component list --installed --toolchain nightly-2025-08-04
 
 API='https://api.github.com/repos/yijunyu/tile-rs/releases/tags/v0.0.2%2Bnightly-2025-08-04'
-required release_api curl --fail --silent --show-error --location --max-time 90 "$API" -o "$EV/release-api.json"
-# Do not infer source provenance from the public tag or the packaged macro dylib.
-python3 - "$EV/release-api.json" "$EV/asset-url.txt" "$TAG" "$EXPECTED_SHA" <<'PY'
+# Anonymous API calls on shared Actions runners can return 403 (run 36600485282).
+# This exact URL, digest and size were verified against the public API before the run;
+# a runner API failure does not weaken the REQUIRED local downloaded-byte SHA256 check.
+URL='https://github.com/yijunyu/tile-rs/releases/download/v0.0.2%2Bnightly-2025-08-04/tile-rs-codegen-aarch64-apple-darwin.tar.gz'
+printf '%s\n' "$URL" > "$EV/asset-url.txt"
+run release_api curl --fail --silent --show-error --location --max-time 90 "$API" -o "$EV/release-api.json"
+if [ "$(< "$EV/logs/release_api.exit")" = 0 ]; then
+  # Do not infer source provenance from the public tag or packaged macro dylib.
+  python3 - "$EV/release-api.json" "$TAG" "$EXPECTED_SHA" "$URL" <<'PY'
 import json, sys
 j = json.load(open(sys.argv[1]))
-assert j['tag_name'] == sys.argv[3], 'release tag changed'
+assert j['tag_name'] == sys.argv[2], 'release tag changed'
 assets = [a for a in j['assets'] if a['name'] == 'tile-rs-codegen-aarch64-apple-darwin.tar.gz']
 assert len(assets) == 1, 'expected exactly one macOS arm64 asset'
 a = assets[0]
-assert a['digest'] == 'sha256:' + sys.argv[4], 'API digest differs from pinned checksum'
-assert a['browser_download_url'].startswith('https://github.com/yijunyu/tile-rs/releases/download/'), 'unexpected URL'
-open(sys.argv[2], 'w').write(a['browser_download_url'] + '\n')
-print('API size=', a['size'], 'digest=', a['digest'])
+assert a['digest'] == 'sha256:' + sys.argv[3], 'API digest differs from pinned checksum'
+assert a['browser_download_url'] == sys.argv[4], 'asset URL differs from pinned URL'
+assert a['size'] == 103449511, 'asset size differs from pinned API size'
 PY
-URL="$(< "$EV/asset-url.txt")"
+  record release_api digest_confirmed
+else
+  record release_api unavailable_using_prechecked_digest
+fi
 TARBALL="$WORK/release.tar.gz"
 required download curl --fail --silent --show-error --location --max-time 600 "$URL" -o "$TARBALL"
 required sha256 shasum -a 256 "$TARBALL"
 ACTUAL="$(awk '{print $1}' "$EV/logs/sha256.stdout")"
 if [ "$ACTUAL" != "$EXPECTED_SHA" ]; then record download checksum_mismatch; exit 2; fi
-python3 - "$EV/release-api.json" "$TARBALL" <<'PY'
-import json, os, sys
-j = json.load(open(sys.argv[1]))
-a = next(a for a in j['assets'] if a['name'] == 'tile-rs-codegen-aarch64-apple-darwin.tar.gz')
-assert os.path.getsize(sys.argv[2]) == a['size'], 'download size differs from release API'
+python3 - "$TARBALL" <<'PY'
+import os, sys
+assert os.path.getsize(sys.argv[1]) == 103449511, 'download size differs from pinned Release API size'
 PY
 record download verified_sha256
 
