@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Throwaway audit harness. No converter code is changed.
 set -euo pipefail
+harness_dir="$(cd "$(dirname "$0")" && pwd)"
 subject="$1"
 evidence="$2"
 mkdir -p "$evidence"
@@ -86,6 +87,7 @@ export TILE_STD_PATH="$release_libs/crates/tile_std"
 run release-libs-o0 "$tile" "$input" -t pto --cross ascend -O0 --keep-dir "$evidence/keep-release-o0" -o "$evidence/release-libs.pto.mlir"
 run release-libs-o2 "$tile" "$input" -t pto --cross ascend --keep-dir "$evidence/keep-release-o2" -o "$evidence/release-libs-o2.pto.mlir"
 run release-libs-captured env PATH="$RUNNER_TEMP/audit-shim:$PATH" "$tile" "$input" -t pto --cross ascend -O0 -o "$evidence/release-libs-captured.pto.mlir"
+bash "$harness_dir/emit-only.sh" "$evidence" "$tile"
 git -C "$release_libs" status --porcelain > "$evidence/release-libs-final-status.txt"
 # Record source-tree cleanliness separately from remote harness changes.
 git status --porcelain > "$evidence/subject-final-status.txt"
