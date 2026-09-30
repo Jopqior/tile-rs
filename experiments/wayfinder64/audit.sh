@@ -60,6 +60,7 @@ case "$PWD" in
     printf '%q ' "$@" > "$dst/cargo.args"
     printf '\nexit=%s\n' "$rc" >> "$dst/cargo.args"
     cp Cargo.toml "$dst/"
+    if [ -f Cargo.lock ]; then cp Cargo.lock "$dst/"; fi
     cp -R src .cargo "$dst/"
     find target -type f \( -name '*.mlir' -o -name '*.tile.*' \) -print > "$dst/artifact-paths.txt"
     while IFS= read -r f; do
@@ -72,6 +73,20 @@ exit "$rc"
 SHIM
 chmod +x "$RUNNER_TEMP/audit-shim/cargo"
 run rust-pto-captured env PATH="$RUNNER_TEMP/audit-shim:$PATH" "$tile" "$input" -t pto --cross ascend -O0 -o "$evidence/captured.pto.mlir"
+# Controlled comparison: same CLI, backend, nightly and input; only the path
+# dependency graph tile_std -> adjacent tile_std_macros changes to the release tag.
+release_libs="$3"
+{
+  git -C "$release_libs" rev-parse HEAD
+  git -C "$release_libs" status --porcelain
+  printf 'baseline TILE_STD_PATH=%s\nrelease TILE_STD_PATH=%s\n' "$TILE_STD_PATH" "$release_libs/crates/tile_std"
+  diff -u "$release_libs/crates/tile_std/src/lib.rs" "$TILE_STD_PATH/src/lib.rs" || true
+} > "$evidence/library-comparison.txt"
+export TILE_STD_PATH="$release_libs/crates/tile_std"
+run release-libs-o0 "$tile" "$input" -t pto --cross ascend -O0 --keep-dir "$evidence/keep-release-o0" -o "$evidence/release-libs.pto.mlir"
+run release-libs-o2 "$tile" "$input" -t pto --cross ascend --keep-dir "$evidence/keep-release-o2" -o "$evidence/release-libs-o2.pto.mlir"
+run release-libs-captured env PATH="$RUNNER_TEMP/audit-shim:$PATH" "$tile" "$input" -t pto --cross ascend -O0 -o "$evidence/release-libs-captured.pto.mlir"
+git -C "$release_libs" status --porcelain > "$evidence/release-libs-final-status.txt"
 # Record source-tree cleanliness separately from remote harness changes.
 git status --porcelain > "$evidence/subject-final-status.txt"
 find "$evidence" -name '*.mlir' -exec shasum -a 256 {} \; > "$evidence/mlir-sha256.txt"

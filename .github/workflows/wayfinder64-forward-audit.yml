@@ -22,12 +22,18 @@ jobs:
           ref: 28eef7fa72c7e9e3a94e78f5973e1f5ce7dc0f9f
           path: subject
           persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: yijunyu/tile-rs
+          ref: c3c8ec0169bd02757b51370ba9c6ec3b116b833d
+          path: release-libs
+          persist-credentials: false
       - name: Install pinned rustc toolchain
         run: |
           rustup toolchain install nightly-2025-08-04 --profile minimal --component rustc-dev --component rust-src --component llvm-tools
           rustup toolchain install stable --profile minimal
       - name: Run audit without changing subject
-        run: bash harness/experiments/wayfinder64/audit.sh "$GITHUB_WORKSPACE/subject" "$GITHUB_WORKSPACE/evidence"
+        run: bash harness/experiments/wayfinder64/audit.sh "$GITHUB_WORKSPACE/subject" "$GITHUB_WORKSPACE/evidence" "$GITHUB_WORKSPACE/release-libs"
       - name: Preserve evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
