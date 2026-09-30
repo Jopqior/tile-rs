@@ -1,0 +1,15 @@
+/tmp/tile-audit64/rlib-object.mlir
+  form: mlir (forced by -f)
+  kernel: __rust_eh_personality  [32 ops]
+  kernel: softmax_1d  [32 ops]
+  kernel: get_block_idx  [32 ops]
+  kernel: __tile_load_f32  [32 ops]
+  kernel: __tile_softmax_f32  [32 ops]
+  kernel: __tile_store_f32  [32 ops]
+  dtypes: int8, int32, int64, float32 -> promotes to int64 (8 bytes)
+  note: int64 has no vector compare path; a predicate on it drops to scalar
+  extents: [8, 1024]  numel 1024
+  tile plan: 8192 x 48 cores -> 0 full + 1024 tail, 1 blocks, 1 rounds/block
+  hazards: 21 edges, 15 barrier points, 0 unsynchronised
+  bounds (DAV_2201): UB ok; repeat FAIL (arch DAV_2201: 8192 elements of 8B is 256 repeats of an 8-bit field that holds 255 (C7); one instruction reaches 8160 elements, so chunk it); DMA stride FAIL (arch DAV_2201: row stride 65536B exceeds the 16-bit descriptor field's 32767B (C8); issue rows one at a time above the bound);
+wrote /tmp/tile-audit64/rlib-object.pto.mlir

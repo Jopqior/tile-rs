@@ -1,0 +1,1 @@
+route: mlir -> pto  -O0  [exact, validated on Ascend 910B (needs a mask prologue ptoas omits; cannbench-tilers NOTES 240)]
