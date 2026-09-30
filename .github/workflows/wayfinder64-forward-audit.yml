@@ -1,0 +1,37 @@
+name: Wayfinder forward conversion audit (temporary)
+on:
+  push:
+    branches: [experiment/wayfinder64-forward]
+    paths:
+      - .github/workflows/wayfinder64-forward-audit.yml
+      - experiments/wayfinder64/**
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: harness
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: 28eef7fa72c7e9e3a94e78f5973e1f5ce7dc0f9f
+          path: subject
+          persist-credentials: false
+      - name: Install pinned rustc toolchain
+        run: |
+          rustup toolchain install nightly-2025-08-04 --profile minimal --component rustc-dev --component rust-src --component llvm-tools
+          rustup toolchain install stable --profile minimal
+      - name: Run audit without changing subject
+        run: bash harness/experiments/wayfinder64/audit.sh "$GITHUB_WORKSPACE/subject" "$GITHUB_WORKSPACE/evidence"
+      - name: Preserve evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: forward-audit-macos-arm64
+          path: evidence/
+          retention-days: 14
